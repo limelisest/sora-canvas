@@ -557,15 +557,15 @@ export function applyAgentOps(doc: CanvasDocument, ops: readonly AgentOp[]): Can
           throw new AgentOpError(400, 'invalid_coords', '分区坐标必须为 0.25 网格倍数', i);
         }
         if (!isValidZoneSize(op.w) || !isValidZoneSize(op.h)) {
-          throw new AgentOpError(400, 'invalid_size', '分区尺寸必须在 1..40 之间的整数', i);
+          throw new AgentOpError(400, 'invalid_size', '分区尺寸必须在 1..40 之间（0.25 步进）', i);
         }
         const zone: ZoneContainer = {
           id: op.id || `zone-${crypto.randomUUID().slice(0, 8)}`,
           title: op.title,
           x: snapQuarter(op.x),
           y: snapQuarter(op.y),
-          w: op.w,
-          h: op.h,
+          w: snapQuarter(op.w),
+          h: snapQuarter(op.h),
           accent: op.accent,
           isPrivate: Boolean(op.isPrivate),
           createdAt: now,
@@ -596,15 +596,15 @@ export function applyAgentOps(doc: CanvasDocument, ops: readonly AgentOp[]): Can
         }
         if (patch.w !== undefined) {
           if (!isValidZoneSize(patch.w)) {
-            throw new AgentOpError(400, 'invalid_size', 'w 必须在 1..40 之间的整数', i);
+            throw new AgentOpError(400, 'invalid_size', 'w 必须在 1..40 之间（0.25 步进）', i);
           }
-          zone.w = patch.w;
+          zone.w = snapQuarter(patch.w);
         }
         if (patch.h !== undefined) {
           if (!isValidZoneSize(patch.h)) {
-            throw new AgentOpError(400, 'invalid_size', 'h 必须在 1..40 之间的整数', i);
+            throw new AgentOpError(400, 'invalid_size', 'h 必须在 1..40 之间（0.25 步进）', i);
           }
-          zone.h = patch.h;
+          zone.h = snapQuarter(patch.h);
         }
         if (patch.accent !== undefined) zone.accent = patch.accent;
         if (patch.isPrivate !== undefined) zone.isPrivate = Boolean(patch.isPrivate);
@@ -704,7 +704,7 @@ export function buildAgentGuideJson() {
       { op: 'resize_entity', fields: { id: 'string', w: '1..6', h: '1..6' } },
       { op: 'move_entities', fields: { ids: 'string[]', dx: '0.25-grid number', dy: '0.25-grid number' } },
       { op: 'place_entity', fields: { id: 'string', x: '0.25-grid number', y: '0.25-grid number' } },
-      { op: 'create_zone', fields: { title: 'string', x: '0.25-grid', y: '0.25-grid', w: 'integer 1..40', h: 'integer 1..40', accent: 'string?', isPrivate: 'boolean?' } },
+      { op: 'create_zone', fields: { title: 'string', x: '0.25-grid', y: '0.25-grid', w: '1..40 (0.25 step)', h: '1..40 (0.25 step)', accent: 'string?', isPrivate: 'boolean?' } },
       { op: 'update_zone', fields: { id: 'string', patch: '{ title?, x?, y?, w?, h?, accent?, isPrivate? }' } },
       { op: 'delete_zone', fields: { id: 'string' } },
     ],
@@ -718,7 +718,7 @@ export function buildAgentGuideMarkdown(): string {
 
 - \`folders\`: \`FolderContainer[]\` — pure desktop containers (\`id, title, x, y, w, h, displayMode, isPrivate, accent\`). Coordinates \`x, y\` support \`0.25\` quarter-grid increments; \`w, h\` are integers \`1..6\`.
 - \`items\`: \`BookmarkItem[]\` — independent bookmark entities (\`id, title, url, subtitle, icon, faviconUrl, accent, tags, parentId, x, y, w, h, order\`). Moving an item between desktop (\`parentId: null\`) and folders (\`parentId: folderId\`) preserves its \`id\` and metadata.
-- \`zones\`: \`ZoneContainer[]\` — background grouping frames (\`id, title, x, y, w, h, accent, isPrivate\`); \`x, y\` support \`0.25\` steps and \`w, h\` are integers \`1..40\`. Unauthenticated \`GET /api/canvas\` strips \`isPrivate: true\` zones AND all entities inside them.
+- \`zones\`: \`ZoneContainer[]\` — background grouping frames (\`id, title, x, y, w, h, accent, isPrivate\`); \`x, y\` support \`0.25\` steps and \`w, h\` are \`1..40 (0.25 step)\`. Unauthenticated \`GET /api/canvas\` strips \`isPrivate: true\` zones AND all entities inside them.
 - \`widgets\`: \`CanvasWidget[]\` — desktop widgets: \`carousel\` (multi-image slider), \`text\` (borderless annotation), and \`note\` (sticky note with optional \`isPrivate\`).
 
 ## Authentication

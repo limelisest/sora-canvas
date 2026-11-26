@@ -1297,11 +1297,11 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
         return;
       }
 
-      // Handle Zone Resize (integer step, 1..40)
+      // Handle Zone Resize (0.25 quarter-grid step, 1..40)
       if (zoneResize) {
         const viewScale = viewRef.current.scale;
-        const dxGrid = Math.round((e.clientX - zoneResize.startX) / (step * viewScale));
-        const dyGrid = Math.round((e.clientY - zoneResize.startY) / (step * viewScale));
+        const dxGrid = snapQuarter((e.clientX - zoneResize.startX) / (step * viewScale));
+        const dyGrid = snapQuarter((e.clientY - zoneResize.startY) / (step * viewScale));
         const nextW = clampZoneSize(zoneResize.startW + dxGrid);
         const nextH = clampZoneSize(zoneResize.startH + dyGrid);
         if (nextW === zoneResize.targetW && nextH === zoneResize.targetH) return;

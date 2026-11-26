@@ -1137,7 +1137,7 @@ test('v4 quarter-grid, private zones isolation, image uploads, and carousel/text
     });
     assert.equal(unauthNoteEdit.statusCode, 401);
 
-    // 6. Legacy decimal zone sizes migrate smoothly on normalizeDocument, while PUT rejects decimals with 409
+    // 6. Legacy non-quarter/sub-1 zone sizes migrate smoothly on normalizeDocument, while PUT accepts 0.25 steps and rejects 3.3 with 409
     const migrated = normalizeDocument({
       version: 2,
       updatedAt: now,
@@ -1147,11 +1147,11 @@ test('v4 quarter-grid, private zones isolation, image uploads, and carousel/text
       zones: [
         {
           id: 'legacy-dec-zone',
-          title: '旧版小数分区',
+          title: '旧版非0.25小数分区',
           x: 0.25,
           y: -0.25,
-          w: 10.5,
-          h: 2.5,
+          w: 3.33,
+          h: 8.5,
           isPrivate: false,
           createdAt: now,
           updatedAt: now,
@@ -1172,12 +1172,36 @@ test('v4 quarter-grid, private zones isolation, image uploads, and carousel/text
     });
     assert.ok(migrated);
     assert.equal(migrated.migrated, true);
-    assert.equal(migrated.doc.zones?.[0].w, 11);
-    assert.equal(migrated.doc.zones?.[0].h, 3);
+    assert.equal(migrated.doc.zones?.[0].w, 3.25);
+    assert.equal(migrated.doc.zones?.[0].h, 8.5);
     assert.equal(migrated.doc.zones?.[1].w, 1);
-    assert.equal(migrated.doc.zones?.[1].h, 1);
+    assert.equal(migrated.doc.zones?.[1].h, 1.25);
 
-    const decimalZonePut = await isolatedApp.inject({
+    const quarterZonePut = await isolatedApp.inject({
+      method: 'PUT',
+      url: '/api/canvas',
+      headers: authHeaders,
+      payload: {
+        folders: [],
+        items: [],
+        zones: [
+          {
+            id: 'ok-quarter-zone',
+            title: 'Quarter Zone',
+            x: 0,
+            y: 0,
+            w: 3.5,
+            h: 8.5,
+            isPrivate: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+      },
+    });
+    assert.equal(quarterZonePut.statusCode, 200);
+
+    const badDecimalZonePut = await isolatedApp.inject({
       method: 'PUT',
       url: '/api/canvas',
       headers: authHeaders,
@@ -1190,7 +1214,7 @@ test('v4 quarter-grid, private zones isolation, image uploads, and carousel/text
             title: 'Bad',
             x: 0,
             y: 0,
-            w: 3.5,
+            w: 3.3,
             h: 2,
             isPrivate: false,
             createdAt: now,
@@ -1199,7 +1223,7 @@ test('v4 quarter-grid, private zones isolation, image uploads, and carousel/text
         ],
       },
     });
-    assert.equal(decimalZonePut.statusCode, 409);
+    assert.equal(badDecimalZonePut.statusCode, 409);
 
     // 7. Orphaned uploads GC keeps canvas + settings + history refs and prunes unreferenced uploads
     const makePng = (r: number, g: number, b: number) =>

@@ -33,7 +33,7 @@ function computeZoneBox(zone: ZoneContainer, grid: GridConfig): ZoneBox {
     top: logicalTop - ZONE_HEADER_PX,
     width: logicalW + ZONE_OUTSET_PX * 2,
     height: logicalH + ZONE_HEADER_PX + ZONE_OUTSET_PX,
-    borderRadius: zone.w === 1 && zone.h === 1 ? 25 : 29,
+    borderRadius: zone.w <= 1 && zone.h <= 1 ? 25 : 29,
     accent: zone.accent || (zone.isPrivate ? '#f97316' : '#64748b'),
   };
 }
@@ -330,7 +330,7 @@ export function ZoneOverlay({
                 ? 'bg-[var(--accent-orange)] text-white'
                 : 'bg-[var(--bg-card)]/96 text-[var(--ink-muted)] hover:bg-[var(--accent-orange)] hover:text-white border border-[var(--border-hair)] shadow-sm'
             }`}
-            title="拖拽角标调整分区范围（整格步进）"
+            title="拖拽角标调整分区范围（1/4 格步进）"
           >
             <svg width="9" height="9" viewBox="0 0 10 10" fill="none" aria-hidden="true">
               <path

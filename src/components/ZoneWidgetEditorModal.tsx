@@ -494,13 +494,13 @@ export function ZoneWidgetEditorModal({
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-medium text-[var(--ink-secondary)] mb-1">
-                    宽度 (1..40 整格)
+                    宽度 (1..40 · 0.25步进)
                   </label>
                   <input
                     type="number"
                     min={1}
                     max={40}
-                    step={1}
+                    step={0.25}
                     value={zoneW}
                     onChange={(e) => setZoneW(Number(e.target.value))}
                     className="bento-input w-full px-3 py-2 text-sm bg-[var(--bg-subtle)]"
@@ -508,13 +508,13 @@ export function ZoneWidgetEditorModal({
                 </div>
                 <div>
                   <label className="block font-medium text-[var(--ink-secondary)] mb-1">
-                    高度 (1..40 整格)
+                    高度 (1..40 · 0.25步进)
                   </label>
                   <input
                     type="number"
                     min={1}
                     max={40}
-                    step={1}
+                    step={0.25}
                     value={zoneH}
                     onChange={(e) => setZoneH(Number(e.target.value))}
                     className="bento-input w-full px-3 py-2 text-sm bg-[var(--bg-subtle)]"

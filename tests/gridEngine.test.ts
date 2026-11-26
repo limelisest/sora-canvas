@@ -297,14 +297,19 @@ test('v4 solveMoveZoneGroup: clamps zone group cleanly against external cards', 
   assert.equal(validateNoOverlaps(res.entities).valid, true);
 });
 
-test('v4 zones: isValidZoneSize accepts integers 1..40 (including 3x1), rejects decimals, allows 0.25 x/y', () => {
+test('v4 zones: isValidZoneSize accepts 0.25-step sizes 1..40 (3x1, 3.5, 8.5), rejects non-quarter decimals, allows 0.25 x/y', () => {
   assert.equal(isValidZoneSize(1), true);
+  assert.equal(isValidZoneSize(2.25), true);
   assert.equal(isValidZoneSize(3), true);
+  assert.equal(isValidZoneSize(3.5), true);
+  assert.equal(isValidZoneSize(8.5), true);
   assert.equal(isValidZoneSize(40), true);
-  assert.equal(isValidZoneSize(3.5), false);
+  assert.equal(isValidZoneSize(3.3), false);
+  assert.equal(isValidZoneSize(0.75), false);
   assert.equal(isValidZoneSize(0), false);
   assert.equal(isValidZoneSize(41), false);
-  assert.equal(clampZoneSize(10.5), 11);
+  assert.equal(clampZoneSize(3.33), 3.25);
+  assert.equal(clampZoneSize(8.5), 8.5);
   assert.equal(clampZoneSize(0.25), 1);
 
   const now = new Date().toISOString();
@@ -323,20 +328,31 @@ test('v4 zones: isValidZoneSize accepts integers 1..40 (including 3x1), rejects 
         createdAt: now,
         updatedAt: now,
       },
+      {
+        id: 'z-quarter',
+        title: '跨半格分区',
+        x: 0,
+        y: 2,
+        w: 4.5,
+        h: 8.5,
+        isPrivate: false,
+        createdAt: now,
+        updatedAt: now,
+      },
     ],
   });
   assert.equal(valid3x1.valid, true);
 
-  const invalidDecimal = validateCanvasDocument({
+  const invalidNonQuarter = validateCanvasDocument({
     folders: [],
     items: [],
     zones: [
       {
         id: 'z-dec',
-        title: '小数分区',
+        title: '非0.25步进分区',
         x: 0,
         y: 0,
-        w: 3.5,
+        w: 3.3,
         h: 2,
         isPrivate: false,
         createdAt: now,
@@ -344,5 +360,5 @@ test('v4 zones: isValidZoneSize accepts integers 1..40 (including 3x1), rejects 
       },
     ],
   });
-  assert.equal(invalidDecimal.valid, false);
+  assert.equal(invalidNonQuarter.valid, false);
 });

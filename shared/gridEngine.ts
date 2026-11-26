@@ -22,11 +22,11 @@ export function isValidQuarterCoord(v: number): boolean {
 }
 
 export function clampZoneSize(v: number): number {
-  return Math.max(MIN_ZONE_SIZE, Math.min(MAX_ZONE_SIZE, Math.round(v)));
+  return Math.max(MIN_ZONE_SIZE, Math.min(MAX_ZONE_SIZE, snapQuarter(v)));
 }
 
 export function isValidZoneSize(v: number): boolean {
-  return Number.isInteger(v) && v >= MIN_ZONE_SIZE && v <= MAX_ZONE_SIZE;
+  return isValidQuarterCoord(v) && v >= MIN_ZONE_SIZE && v <= MAX_ZONE_SIZE;
 }
 
 export function isEntityInsideZone(entity: GridRect, zone: GridRect): boolean {
@@ -249,7 +249,7 @@ export function validateCanvasDocument(
       return { valid: false, error: `分区 ${zone.id} 坐标必须为 0.25 网格倍数` };
     }
     if (!isValidZoneSize(zone.w) || !isValidZoneSize(zone.h)) {
-      return { valid: false, error: `分区 ${zone.id} 尺寸必须在 1..40 之间的整数` };
+      return { valid: false, error: `分区 ${zone.id} 尺寸必须在 1..40 之间（0.25 步进）` };
     }
   }
 
