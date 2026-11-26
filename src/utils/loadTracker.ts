@@ -6,6 +6,7 @@ export interface TopLoadState {
   phase: LoadPhase;
   percent: number;
   visible: boolean;
+  label: string;
 }
 
 let cycleId = 0;
@@ -14,6 +15,7 @@ let snapshot: TopLoadState = {
   phase: 'content',
   percent: 25,
   visible: true,
+  label: '加载布局',
 };
 
 const registered = new Set<string>();
@@ -27,24 +29,47 @@ let settleCheckTimer: number | null = null;
 let safetyTimer: number | null = null;
 let hideTimer: number | null = null;
 
+function resolveLoadLabel(phase: LoadPhase, percent: number): string {
+  if (percent >= 100) return '加载完成';
+  if (phase === 'content') return '加载布局';
+
+  const mediaPrefix = `${cycleId}:carousel:`;
+  const wallPrefix = `${cycleId}:wallpaper:`;
+  let hasUnsettledMedia = false;
+  for (const key of registered) {
+    if (!settled.has(key) && (key.startsWith(mediaPrefix) || key.startsWith(wallPrefix))) {
+      hasUnsettledMedia = true;
+      break;
+    }
+  }
+  if (phase === 'media' || hasUnsettledMedia) return '加载图片';
+  return '加载图标';
+}
+
 function emit() {
   for (const l of listeners) l();
 }
 
-function setSnapshot(patch: Partial<TopLoadState>) {
-  const next: TopLoadState = {
-    phase: patch.phase ?? snapshot.phase,
-    percent: patch.percent ?? snapshot.percent,
-    visible: patch.visible ?? snapshot.visible,
-  };
+function setSnapshot(patch: Partial<Omit<TopLoadState, 'label'>>) {
+  const nextPhase = patch.phase ?? snapshot.phase;
+  const nextPercent = patch.percent ?? snapshot.percent;
+  const nextVisible = patch.visible ?? snapshot.visible;
+  const nextLabel = resolveLoadLabel(nextPhase, nextPercent);
+
   if (
-    next.phase === snapshot.phase &&
-    next.percent === snapshot.percent &&
-    next.visible === snapshot.visible
+    nextPhase === snapshot.phase &&
+    nextPercent === snapshot.percent &&
+    nextVisible === snapshot.visible &&
+    nextLabel === snapshot.label
   ) {
     return;
   }
-  snapshot = next;
+  snapshot = {
+    phase: nextPhase,
+    percent: nextPercent,
+    visible: nextVisible,
+    label: nextLabel,
+  };
   emit();
 }
 
@@ -84,7 +109,7 @@ function finishCycle(targetCycle: number) {
       if (targetCycle === cycleId) {
         setSnapshot({ visible: false });
       }
-    }, 180);
+    }, 260);
   }
 }
 
@@ -97,9 +122,7 @@ function recalcProgress() {
   if (snapshot.phase !== 'content' && registered.size > 0) {
     const ratio = Math.min(1, settled.size / registered.size);
     const nextPct = Math.max(snapshot.percent, Math.min(95, 45 + Math.round(ratio * 50)));
-    if (nextPct !== snapshot.percent) {
-      setSnapshot({ percent: nextPct });
-    }
+    setSnapshot({ percent: nextPct });
   }
 }
 

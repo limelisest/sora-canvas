@@ -10,8 +10,8 @@ import {
 import { flushSync } from 'react-dom';
 import {
   Check,
-  ChevronUp,
   FolderCog,
+  FolderOpen,
   LayoutGrid,
   List,
   Lock,
@@ -492,7 +492,7 @@ export function MobileNavView({
     <section
       key={tab.id}
       style={{ left: offsetPct }}
-      className="absolute top-0 bottom-0 w-full overflow-y-auto overscroll-y-contain px-3.5 pt-2 pb-24"
+      className="absolute top-0 bottom-0 w-full overflow-y-auto overscroll-y-contain px-3.5 pt-2 pb-56"
     >
       <div className="max-w-2xl mx-auto space-y-4">
         {tab.items.length === 0 ? (
@@ -555,10 +555,10 @@ export function MobileNavView({
         </>
       )}
 
-      {/* Top Fixed Area: Minimal Header + Embedded Instant Search */}
+      {/* Top Fixed Area: Centered Header + Active Category Subtitle + Embedded Instant Search */}
       <div className="relative z-20 shrink-0">
-        <header className="px-3.5 pt-3.5 pb-2 flex items-center justify-between gap-2 max-w-2xl mx-auto">
-          <div className="min-w-0 flex items-center gap-2">
+        <header className="px-4 pt-3.5 pb-1.5 flex flex-col items-center justify-center text-center max-w-2xl mx-auto">
+          <div className="inline-flex items-center justify-center gap-2 max-w-full">
             <span
               className="inline-block h-2.5 w-2.5 rounded-full shrink-0"
               style={{ backgroundColor: 'var(--accent-orange)' }}
@@ -568,78 +568,28 @@ export function MobileNavView({
             </span>
           </div>
 
-          <div className="flex items-center gap-1 shrink-0">
+          {!isSearching && !loading && activeTab && (
             <button
               type="button"
-              onClick={onLockToggle}
-              className={`relative inline-flex h-8 items-center gap-1 rounded-full px-2.5 text-xs font-medium border transition-colors cursor-pointer ${
-                unlocked
-                  ? 'bg-amber-500/12 border-amber-500/30 text-amber-600 dark:text-amber-400'
-                  : 'bg-[var(--bg-card)]/90 border-[var(--border-hair)] text-[var(--ink-secondary)]'
-              }`}
-              title={unlocked ? '上锁并隐藏私密内容' : '解锁管理与私密分类'}
+              onClick={() => setPickerOpen((v) => !v)}
+              className="mt-1 inline-flex items-center justify-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11.5px] font-medium text-[var(--ink-secondary)] hover:bg-[var(--bg-card)]/70 transition-colors cursor-pointer max-w-full"
+              aria-label="展开分类目录"
             >
-              {unlocked ? <Unlock size={13} /> : <Lock size={13} />}
-              {unlocked && <span>上锁</span>}
-              {!unlocked && hasPrivateHidden && (
-                <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent-orange)]" />
-              )}
+              <span
+                className="h-1.5 w-1.5 rounded-full shrink-0"
+                style={{
+                  backgroundColor: activeTab.isPrivate
+                    ? '#ff5500'
+                    : activeTab.accent || 'var(--accent-orange)',
+                }}
+              />
+              {activeTab.isPrivate && <Lock size={10} className="text-amber-500 shrink-0" />}
+              <span className="truncate max-w-[160px]">{activeTab.title}</span>
+              <span className="text-[10.5px] text-[var(--ink-muted)] tabular-nums shrink-0">
+                {resolvedTabIndex + 1}/{tabs.length}
+              </span>
             </button>
-
-            {unlocked && (
-              <button
-                type="button"
-                onClick={() => onCreateItem(activeTab?.kind === 'folder' ? activeTab.id : null)}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--accent-orange)] text-white shadow-sm cursor-pointer"
-                title="快速新增书签"
-                aria-label="快速新增书签"
-              >
-                <Plus size={15} />
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={toggleLayoutMode}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--bg-card)]/90 border border-[var(--border-hair)] text-[var(--ink-secondary)] cursor-pointer"
-              title={layoutMode === 'grid' ? '切换为单列列表' : '切换为双列卡片'}
-              aria-label="切换卡片列数"
-            >
-              {layoutMode === 'grid' ? <List size={14} /> : <LayoutGrid size={14} />}
-            </button>
-
-            <button
-              type="button"
-              onClick={onToggleDark}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--bg-card)]/90 border border-[var(--border-hair)] text-[var(--ink-secondary)] cursor-pointer"
-              title="切换深浅色主题"
-              aria-label="切换深浅色主题"
-            >
-              {dark ? <Sun size={14} /> : <Moon size={14} />}
-            </button>
-
-            <button
-              type="button"
-              onClick={onSwitchToCanvas}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--bg-card)]/90 border border-[var(--border-hair)] text-[var(--ink-secondary)] cursor-pointer"
-              title="切换至二维画布视图"
-              aria-label="切换至二维画布视图"
-            >
-              <MapIcon size={14} />
-            </button>
-
-            {unlocked && (
-              <button
-                type="button"
-                onClick={onOpenSettings}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--bg-card)]/90 border border-[var(--border-hair)] text-[var(--ink-secondary)] cursor-pointer"
-                title="站点设置"
-                aria-label="站点设置"
-              >
-                <Settings size={14} />
-              </button>
-            )}
-          </div>
+          )}
         </header>
 
         <div className="px-3.5 pb-2 max-w-2xl mx-auto">
@@ -673,7 +623,7 @@ export function MobileNavView({
             正在加载书签...
           </div>
         ) : isSearching ? (
-          <div className="h-full w-full overflow-y-auto overscroll-y-contain px-3.5 pt-2 pb-24">
+          <div className="h-full w-full overflow-y-auto overscroll-y-contain px-3.5 pt-2 pb-56">
             <div className="max-w-2xl mx-auto space-y-4">
               {searchResults.matchedTabs.length > 0 && (
                 <div className="space-y-2">
@@ -772,7 +722,7 @@ export function MobileNavView({
         )}
       </main>
 
-      {/* Bottom-Center Category Picker Popover */}
+      {/* Category Picker Popover anchored beside the bottom-right vertical dock */}
       {!isSearching && !loading && tabs.length > 0 && pickerOpen && (
         <>
           <div
@@ -783,7 +733,7 @@ export function MobileNavView({
           <div
             role="dialog"
             aria-label="选择分类"
-            className="fixed left-1/2 -translate-x-1/2 bottom-[calc(4.1rem+env(safe-area-inset-bottom))] z-50 w-[min(310px,calc(100vw-28px))] max-h-[56dvh] flex flex-col bento-modal overflow-hidden shadow-2xl"
+            className="fixed right-14 bottom-[calc(1rem+env(safe-area-inset-bottom))] z-50 w-[min(268px,calc(100vw-76px))] max-h-[60dvh] flex flex-col bento-modal overflow-hidden shadow-2xl"
           >
             <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-[var(--border-hair)] shrink-0">
               <div className="flex items-center gap-2">
@@ -848,36 +798,107 @@ export function MobileNavView({
         </>
       )}
 
-      {/* Bottom-Center Floating Category Pill */}
-      {!isSearching && !loading && activeTab && (
+      {/* Bottom-Right Vertical Icon-Only Floating Action Dock */}
+      <aside
+        aria-label="快捷操作栏"
+        className="fixed right-3 bottom-[calc(1rem+env(safe-area-inset-bottom))] z-50 pill-surface rounded-full p-1.5 shadow-lg flex flex-col items-center gap-1"
+      >
+        {!isSearching && !loading && activeTab && (
+          <button
+            type="button"
+            onClick={() => setPickerOpen((v) => !v)}
+            className={`relative h-9 w-9 rounded-full flex items-center justify-center transition-colors cursor-pointer active:scale-95 ${
+              pickerOpen
+                ? 'bg-[var(--ink-main)] text-[var(--bg-card)]'
+                : 'text-[var(--ink-main)] hover:bg-[var(--bg-subtle)]'
+            }`}
+            aria-expanded={pickerOpen}
+            aria-label="展开分类目录"
+            title={`分类目录（${activeTab.title} ${resolvedTabIndex + 1}/${tabs.length}）`}
+          >
+            <FolderOpen size={16} />
+            <span
+              className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full"
+              style={{
+                backgroundColor: activeTab.isPrivate
+                  ? '#ff5500'
+                  : activeTab.accent || 'var(--accent-orange)',
+              }}
+            />
+          </button>
+        )}
+
+        {unlocked && (
+          <button
+            type="button"
+            onClick={() => onCreateItem(activeTab?.kind === 'folder' ? activeTab.id : null)}
+            className="h-9 w-9 rounded-full flex items-center justify-center bg-[var(--accent-orange)] text-white shadow-xs transition-transform cursor-pointer active:scale-95"
+            aria-label="快速新增书签"
+            title="快速新增书签"
+          >
+            <Plus size={16} />
+          </button>
+        )}
+
         <button
           type="button"
-          onClick={() => setPickerOpen((v) => !v)}
-          className="fixed left-1/2 -translate-x-1/2 bottom-[calc(1rem+env(safe-area-inset-bottom))] z-50 pill-surface rounded-full pl-3.5 pr-3 py-2 shadow-lg flex items-center gap-2 text-[13px] font-semibold cursor-pointer active:scale-95 transition-transform max-w-[calc(100vw-32px)]"
-          aria-expanded={pickerOpen}
-          aria-label="切换书签分类"
+          onClick={toggleLayoutMode}
+          className="h-9 w-9 rounded-full flex items-center justify-center text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] transition-colors cursor-pointer active:scale-95"
+          aria-label="切换卡片列数"
+          title={layoutMode === 'grid' ? '切换为单列列表' : '切换为双列卡片'}
         >
-          <span
-            className="h-2.5 w-2.5 rounded-full shrink-0"
-            style={{
-              backgroundColor: activeTab.isPrivate
-                ? '#ff5500'
-                : activeTab.accent || 'var(--accent-orange)',
-            }}
-          />
-          {activeTab.isPrivate && <Lock size={11} className="text-amber-500 shrink-0" />}
-          <span className="truncate max-w-[150px] text-[var(--ink-main)]">{activeTab.title}</span>
-          <span className="text-[11px] font-medium text-[var(--ink-muted)] tabular-nums shrink-0">
-            {resolvedTabIndex + 1}/{tabs.length}
-          </span>
-          <ChevronUp
-            size={14}
-            className={`text-[var(--ink-muted)] shrink-0 transition-transform duration-150 ${
-              pickerOpen ? 'rotate-180' : ''
-            }`}
-          />
+          {layoutMode === 'grid' ? <List size={15} /> : <LayoutGrid size={15} />}
         </button>
-      )}
+
+        <button
+          type="button"
+          onClick={onToggleDark}
+          className="h-9 w-9 rounded-full flex items-center justify-center text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] transition-colors cursor-pointer active:scale-95"
+          aria-label="切换深浅色主题"
+          title="切换深浅色主题"
+        >
+          {dark ? <Sun size={15} /> : <Moon size={15} />}
+        </button>
+
+        <button
+          type="button"
+          onClick={onSwitchToCanvas}
+          className="h-9 w-9 rounded-full flex items-center justify-center text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] transition-colors cursor-pointer active:scale-95"
+          aria-label="切换至二维画布视图"
+          title="切换至二维画布视图"
+        >
+          <MapIcon size={15} />
+        </button>
+
+        {unlocked && (
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            className="h-9 w-9 rounded-full flex items-center justify-center text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] transition-colors cursor-pointer active:scale-95"
+            aria-label="站点设置"
+            title="站点设置"
+          >
+            <Settings size={15} />
+          </button>
+        )}
+
+        <button
+          type="button"
+          onClick={onLockToggle}
+          className={`relative h-9 w-9 rounded-full flex items-center justify-center transition-colors cursor-pointer active:scale-95 ${
+            unlocked
+              ? 'bg-amber-500/14 text-amber-600 dark:text-amber-400'
+              : 'text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)]'
+          }`}
+          aria-label={unlocked ? '上锁并隐藏私密内容' : '解锁管理与私密分类'}
+          title={unlocked ? '上锁并隐藏私密内容' : '解锁管理与私密分类'}
+        >
+          {unlocked ? <Unlock size={15} /> : <Lock size={15} />}
+          {!unlocked && hasPrivateHidden && (
+            <span className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-[var(--accent-orange)]" />
+          )}
+        </button>
+      </aside>
     </div>
   );
 }

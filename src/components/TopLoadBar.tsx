@@ -1,24 +1,27 @@
 import { useTopLoadState } from '../utils/loadTracker';
 
 export function TopLoadBar() {
-  const { visible, percent } = useTopLoadState();
+  const { visible, percent, label } = useTopLoadState();
 
   return (
     <div
-      aria-hidden="true"
-      className="fixed top-0 left-0 right-0 h-[2.5px] z-[80] pointer-events-none"
+      aria-live="polite"
+      className={`fixed top-3.5 left-1/2 -translate-x-1/2 z-[80] pointer-events-none transition-all duration-250 ease-out ${
+        visible ? 'opacity-100 translate-y-0 scale-100' : 'opacity-0 -translate-y-2 scale-95'
+      }`}
     >
-      <div
-        style={{
-          width: `${percent}%`,
-          opacity: visible ? 1 : 0,
-          transition: 'width 220ms ease-out, opacity 320ms ease',
-          background:
-            'linear-gradient(90deg, color-mix(in srgb, var(--accent-orange) 72%, #fb923c), var(--accent-orange), #fbbf24)',
-          boxShadow: '0 0 8px color-mix(in srgb, var(--accent-orange) 55%, transparent)',
-        }}
-        className="h-full rounded-r-full"
-      />
+      <div className="pill-surface rounded-full px-3.5 py-1.5 shadow-lg flex items-center gap-2.5 text-xs font-medium whitespace-nowrap">
+        <div className="w-24 sm:w-28 h-2 rounded-full bg-[var(--bg-subtle)] border border-[var(--border-hair)] overflow-hidden relative">
+          <div
+            style={{ width: `${percent}%` }}
+            className="h-full rounded-full load-bar-fill transition-[width] duration-220 ease-out"
+          />
+        </div>
+        <span className="h-3 w-px bg-[var(--border-hair)] shrink-0" />
+        <span className="text-[11.5px] font-semibold text-[var(--ink-secondary)] min-w-[48px] text-center">
+          {label}
+        </span>
+      </div>
     </div>
   );
 }
