@@ -33,7 +33,7 @@ import {
   saveCanvasCompactApi,
   saveSettingsApi,
 } from './api';
-import { TopPillBar } from './components/TopPillBar';
+import { TopPillBar, type SaveStatus } from './components/TopPillBar';
 import { InfiniteCanvas, type InfiniteCanvasHandle } from './components/InfiniteCanvas';
 import { ZoomControlPill } from './components/ZoomControlPill';
 import {
@@ -128,6 +128,8 @@ export default function App() {
           widgets: [],
         }
   );
+  const docRef = useRef(doc);
+  docRef.current = doc;
   const [settings, setSettings] = useState<SiteSettings>(
     () => INITIAL_BOOT?.settings ?? DEFAULT_SITE_SETTINGS
   );
@@ -208,14 +210,21 @@ export default function App() {
   const [newlyCreatedId, setNewlyCreatedId] = useState<string | null>(null);
   const newlyCreatedTimerRef = useRef<number | null>(null);
   const [inlineEditingId, setInlineEditingId] = useState<string | null>(null);
-  const [toast, setToast] = useState<{ msg: string; tone: 'error' | 'info' } | null>(null);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
+  const [finishingEdit, setFinishingEdit] = useState(false);
+  const [toast, setToast] = useState<{ msg: string; tone: 'error' | 'info' | 'success' } | null>(
+    null
+  );
 
-  const showToast = useCallback((msg: string, tone: 'error' | 'info' = 'info') => {
-    setToast({ msg, tone });
-    setTimeout(() => {
-      setToast((cur) => (cur?.msg === msg ? null : cur));
-    }, 3200);
-  }, []);
+  const showToast = useCallback(
+    (msg: string, tone: 'error' | 'info' | 'success' = 'info') => {
+      setToast({ msg, tone });
+      setTimeout(() => {
+        setToast((cur) => (cur?.msg === msg ? null : cur));
+      }, 3200);
+    },
+    []
+  );
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark);
@@ -260,6 +269,7 @@ export default function App() {
           zones: res.zones ?? [],
           widgets: res.widgets ?? [],
         };
+        docRef.current = nextDoc;
         setDoc(nextDoc);
         setUnlocked(res.unlocked);
         setHasPrivateHidden(res.hasPrivateHidden);
@@ -294,43 +304,113 @@ export default function App() {
 
   const commitRevRef = useRef(0);
   const inFlightSaveRef = useRef(false);
+  const inFlightPromiseRef = useRef<Promise<boolean> | null>(null);
   const pendingSaveRef = useRef<{ rev: number; doc: CanvasDocument } | null>(null);
   const saveTimerRef = useRef<number | null>(null);
+  const savedBadgeTimerRef = useRef<number | null>(null);
+  const sessionDirtyRef = useRef(false);
 
-  const flushPendingSave = useCallback(async () => {
-    if (inFlightSaveRef.current) return;
+  const flushPendingSave = useCallback(async (): Promise<boolean> => {
+    if (inFlightPromiseRef.current) {
+      return inFlightPromiseRef.current;
+    }
     const job = pendingSaveRef.current;
-    if (!job) return;
+    if (!job) return true;
     pendingSaveRef.current = null;
     inFlightSaveRef.current = true;
+    setSaveStatus('saving');
 
-    try {
-      const saved = await saveCanvasCompactApi(job.doc);
-      // Only update metadata if no newer local mutation happened while request was in flight
-      if (job.rev === commitRevRef.current && !pendingSaveRef.current) {
-        setDoc((cur) => ({
-          ...cur,
-          updatedAt: saved.updatedAt,
-          grid: saved.grid,
-        }));
+    const run = (async (): Promise<boolean> => {
+      let allOk = true;
+      try {
+        const saved = await saveCanvasCompactApi(job.doc);
+        // Only update metadata if no newer local mutation happened while request was in flight
+        if (job.rev === commitRevRef.current && !pendingSaveRef.current) {
+          setDoc((cur) => {
+            const next = {
+              ...cur,
+              updatedAt: saved.updatedAt,
+              grid: saved.grid,
+            };
+            docRef.current = next;
+            return next;
+          });
+          if (savedBadgeTimerRef.current !== null) {
+            window.clearTimeout(savedBadgeTimerRef.current);
+          }
+          setSaveStatus('saved');
+          savedBadgeTimerRef.current = window.setTimeout(() => {
+            savedBadgeTimerRef.current = null;
+            setSaveStatus((cur) => (cur === 'saved' ? 'idle' : cur));
+          }, 2400);
+        }
+      } catch (err) {
+        allOk = false;
+        setSaveStatus('error');
+        if (!pendingSaveRef.current) {
+          showToast(err instanceof Error ? err.message : '保存失败，正在同步最新画布', 'error');
+          void refreshCanvas(false);
+        }
+      } finally {
+        inFlightSaveRef.current = false;
+        inFlightPromiseRef.current = null;
       }
-    } catch (err) {
-      if (!pendingSaveRef.current) {
-        showToast(err instanceof Error ? err.message : '保存失败，正在同步最新画布', 'error');
-        void refreshCanvas(false);
-      }
-    } finally {
-      inFlightSaveRef.current = false;
+
       if (pendingSaveRef.current) {
-        void flushPendingSave();
+        const tailOk = await flushPendingSave();
+        return allOk && tailOk;
+      }
+      return allOk;
+    })();
+
+    inFlightPromiseRef.current = run;
+    return run;
+  }, [refreshCanvas, showToast]);
+
+  const flushAllPendingSaves = useCallback(async (): Promise<boolean> => {
+    if (saveTimerRef.current !== null) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    let ok = true;
+    while (inFlightPromiseRef.current || pendingSaveRef.current) {
+      if (inFlightPromiseRef.current) {
+        const res = await inFlightPromiseRef.current;
+        if (!res) ok = false;
+      }
+      if (pendingSaveRef.current) {
+        const res = await flushPendingSave();
+        if (!res) ok = false;
       }
     }
-  }, [refreshCanvas, showToast]);
+    return ok;
+  }, [flushPendingSave]);
+
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (pendingSaveRef.current || inFlightSaveRef.current || inFlightPromiseRef.current) {
+        if (saveTimerRef.current !== null) {
+          window.clearTimeout(saveTimerRef.current);
+          saveTimerRef.current = null;
+        }
+        void flushPendingSave();
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload);
+    };
+  }, [flushPendingSave]);
 
   useEffect(() => {
     return () => {
       if (saveTimerRef.current !== null) {
         window.clearTimeout(saveTimerRef.current);
+      }
+      if (savedBadgeTimerRef.current !== null) {
+        window.clearTimeout(savedBadgeTimerRef.current);
       }
     };
   }, []);
@@ -343,40 +423,48 @@ export default function App() {
       nextZones?: ZoneContainer[],
       nextWidgets?: CanvasWidget[]
     ) => {
-      setDoc((prevDoc) => {
-        const curZones = prevDoc.zones ?? [];
-        const curWidgets = prevDoc.widgets ?? [];
-        if (recordUndo) {
-          setUndoStack((s) => [
-            ...s.slice(-29),
-            {
-              folders: prevDoc.folders,
-              items: prevDoc.items,
-              zones: curZones,
-              widgets: curWidgets,
-            },
-          ]);
-          setRedoStack([]);
-        }
-        const nextDoc: CanvasDocument = {
-          ...prevDoc,
-          updatedAt: new Date().toISOString(),
-          folders: nextFolders,
-          items: nextItems,
-          zones: nextZones ?? curZones,
-          widgets: nextWidgets ?? curWidgets,
-        };
-        const nextRev = ++commitRevRef.current;
-        pendingSaveRef.current = { rev: nextRev, doc: nextDoc };
-        if (saveTimerRef.current !== null) {
-          window.clearTimeout(saveTimerRef.current);
-        }
-        saveTimerRef.current = window.setTimeout(() => {
-          saveTimerRef.current = null;
-          void flushPendingSave();
-        }, 80);
-        return nextDoc;
-      });
+      const prevDoc = docRef.current;
+      const curZones = prevDoc.zones ?? [];
+      const curWidgets = prevDoc.widgets ?? [];
+      if (recordUndo) {
+        setUndoStack((s) => [
+          ...s.slice(-29),
+          {
+            folders: prevDoc.folders,
+            items: prevDoc.items,
+            zones: curZones,
+            widgets: curWidgets,
+          },
+        ]);
+        setRedoStack([]);
+      }
+      const nextDoc: CanvasDocument = {
+        ...prevDoc,
+        updatedAt: new Date().toISOString(),
+        folders: nextFolders,
+        items: nextItems,
+        zones: nextZones ?? curZones,
+        widgets: nextWidgets ?? curWidgets,
+      };
+      docRef.current = nextDoc;
+      setDoc(nextDoc);
+
+      sessionDirtyRef.current = true;
+      if (savedBadgeTimerRef.current !== null) {
+        window.clearTimeout(savedBadgeTimerRef.current);
+        savedBadgeTimerRef.current = null;
+      }
+      setSaveStatus('saving');
+
+      const nextRev = ++commitRevRef.current;
+      pendingSaveRef.current = { rev: nextRev, doc: nextDoc };
+      if (saveTimerRef.current !== null) {
+        window.clearTimeout(saveTimerRef.current);
+      }
+      saveTimerRef.current = window.setTimeout(() => {
+        saveTimerRef.current = null;
+        void flushPendingSave();
+      }, 80);
     },
     [flushPendingSave]
   );
@@ -573,12 +661,26 @@ export default function App() {
   async function handleLockToggle() {
     if (unlocked) {
       try {
-        // Cancel any pending optimistic write before locking
-        if (saveTimerRef.current !== null) {
-          window.clearTimeout(saveTimerRef.current);
-          saveTimerRef.current = null;
+        const activeEl = document.activeElement as HTMLElement | null;
+        if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) {
+          activeEl.blur();
+          await new Promise<void>((r) => window.setTimeout(r, 0));
         }
-        pendingSaveRef.current = null;
+
+        if (
+          saveTimerRef.current !== null ||
+          pendingSaveRef.current ||
+          inFlightSaveRef.current ||
+          inFlightPromiseRef.current
+        ) {
+          const savedOk = await flushAllPendingSaves();
+          if (!savedOk) {
+            showToast('未保存的布局落盘失败，已中止上锁', 'error');
+            return;
+          }
+        }
+        sessionDirtyRef.current = false;
+        setInlineEditingId(null);
 
         await lockAuth();
         setUnlocked(false);
@@ -645,6 +747,7 @@ export default function App() {
         ...doc,
         grid: res.grid,
       };
+      docRef.current = nextDoc;
       setDoc(nextDoc);
       if (patch.defaultTheme) {
         localStorage.removeItem(THEME_STORAGE_KEY);
@@ -712,12 +815,38 @@ export default function App() {
     [handleUpdateSettings, showToast]
   );
 
-  function handleToggleEditMode() {
+  async function handleToggleEditMode() {
     if (editMode) {
+      if (finishingEdit) return;
+      const activeEl = document.activeElement as HTMLElement | null;
+      if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) {
+        activeEl.blur();
+        await new Promise<void>((r) => window.setTimeout(r, 0));
+      }
+
+      if (
+        saveTimerRef.current !== null ||
+        pendingSaveRef.current ||
+        inFlightSaveRef.current ||
+        inFlightPromiseRef.current
+      ) {
+        setFinishingEdit(true);
+        const savedOk = await flushAllPendingSaves();
+        setFinishingEdit(false);
+        if (!savedOk) {
+          showToast('布局保存失败，请检查网络后重试', 'error');
+          return;
+        }
+      }
+
       setEditMode(false);
       setMarqueeMode(false);
       setInlineEditingId(null);
       setSelectedIds([]);
+      if (sessionDirtyRef.current) {
+        sessionDirtyRef.current = false;
+        showToast('✓ 布局已保存', 'success');
+      }
       return;
     }
     if (!unlocked) {
@@ -728,6 +857,7 @@ export default function App() {
       });
       return;
     }
+    sessionDirtyRef.current = false;
     setEditMode(true);
   }
 
@@ -1924,6 +2054,7 @@ export default function App() {
             onLock={() => void handleLockToggle()}
             onUpdateSettings={handleUpdateSettings}
             onCanvasReplaced={(nextDoc, nextSettings) => {
+              docRef.current = nextDoc;
               setDoc(nextDoc);
               if (nextSettings) setSettings(nextSettings);
             }}
@@ -1960,7 +2091,9 @@ export default function App() {
                 hasPrivateHidden={hasPrivateHidden}
                 onLockToggle={handleLockToggle}
                 editMode={editMode}
-                onToggleEditMode={handleToggleEditMode}
+                onToggleEditMode={() => void handleToggleEditMode()}
+                saveStatus={saveStatus}
+                finishingEdit={finishingEdit}
                 onOpenSettings={() => setSettingsOpen(true)}
                 dark={dark}
                 onToggleDark={toggleDark}
@@ -2253,6 +2386,7 @@ export default function App() {
                     resolveActiveViewportMode(settings) === 'auto'
                   );
                   if (nextAction === 'edit') {
+                    sessionDirtyRef.current = false;
                     setEditMode(true);
                   }
                   if (widgetPending) {
@@ -2281,7 +2415,9 @@ export default function App() {
             className={`rounded-full px-4 py-1.5 text-xs font-medium shadow-lg ${
               toast.tone === 'error'
                 ? 'bg-[var(--accent-red)] text-white'
-                : 'bg-[var(--ink-main)] text-[var(--bg-card)]'
+                : toast.tone === 'success'
+                  ? 'bg-[var(--accent-emerald)] text-white'
+                  : 'bg-[var(--ink-main)] text-[var(--bg-card)]'
             }`}
           >
             {toast.msg}

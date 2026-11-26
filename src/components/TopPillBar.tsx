@@ -1,6 +1,7 @@
 import {
   Check,
   LayoutList,
+  Loader2,
   Lock,
   Moon,
   Pencil,
@@ -12,6 +13,8 @@ import {
 import type { SiteSettings } from '../../shared/types';
 import { SHORTCUT_SEARCH } from '../utils/platform';
 
+export type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
+
 interface TopPillBarProps {
   settings: SiteSettings;
   onOpenSearch: () => void;
@@ -20,6 +23,8 @@ interface TopPillBarProps {
   onLockToggle: () => void;
   editMode: boolean;
   onToggleEditMode: () => void;
+  saveStatus?: SaveStatus;
+  finishingEdit?: boolean;
   onOpenSettings: () => void;
   dark: boolean;
   onToggleDark: () => void;
@@ -35,6 +40,8 @@ export function TopPillBar({
   onLockToggle,
   editMode,
   onToggleEditMode,
+  saveStatus = 'idle',
+  finishingEdit = false,
   onOpenSettings,
   dark,
   onToggleDark,
@@ -54,8 +61,21 @@ export function TopPillBar({
         </span>
       </div>
 
-      {/* Right Pill: Search + Lock/Unlock + Edit + Unlocked-Only Settings + Theme */}
+      {/* Right Pill: Save Status + Search + Lock/Unlock + Edit + Unlocked-Only Settings + Theme */}
       <div className="pointer-events-auto pill-surface flex items-center gap-1.5 px-2.5 py-1.5 text-sm">
+        {saveStatus === 'saving' && !finishingEdit && (
+          <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium bg-amber-500/12 text-amber-600 dark:text-amber-400">
+            <Loader2 size={11} className="animate-spin" />
+            <span>保存中...</span>
+          </span>
+        )}
+        {saveStatus === 'saved' && (
+          <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium bg-emerald-500/12 text-emerald-600 dark:text-emerald-400">
+            <Check size={11} />
+            <span>已保存</span>
+          </span>
+        )}
+
         <button
           type="button"
           onClick={onOpenSearch}
@@ -89,16 +109,32 @@ export function TopPillBar({
 
         <button
           type="button"
+          disabled={finishingEdit}
           onClick={onToggleEditMode}
-          className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors cursor-pointer ${
+          className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors cursor-pointer disabled:opacity-85 disabled:cursor-wait ${
             editMode
               ? 'bg-[var(--accent-orange)] text-white hover:opacity-90'
               : 'text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)]'
           }`}
-          title={editMode ? '退出编辑模式' : '进入编辑模式'}
+          title={
+            finishingEdit
+              ? '正在确认布局保存到服务器...'
+              : editMode
+                ? '确认保存并退出编辑模式'
+                : '进入编辑模式'
+          }
         >
-          {editMode ? <Check size={13} /> : <Pencil size={13} />}
-          <span>{editMode ? '完成' : '编辑'}</span>
+          {finishingEdit ? (
+            <>
+              <Loader2 size={13} className="animate-spin" />
+              <span>保存中...</span>
+            </>
+          ) : (
+            <>
+              {editMode ? <Check size={13} /> : <Pencil size={13} />}
+              <span>{editMode ? '完成' : '编辑'}</span>
+            </>
+          )}
         </button>
 
         {unlocked && (
