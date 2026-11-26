@@ -1,5 +1,16 @@
-import { useEffect, useMemo, useRef, useState, type TouchEvent as ReactTouchEvent } from 'react';
 import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type TouchEvent as ReactTouchEvent,
+} from 'react';
+import { flushSync } from 'react-dom';
+import {
+  Check,
+  ChevronUp,
   ExternalLink,
   FolderCog,
   LayoutGrid,
@@ -81,6 +92,7 @@ export function MobileNavView({
   onEditFolder,
 }: MobileNavViewProps) {
   const [query, setQuery] = useState('');
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [layoutMode, setLayoutMode] = useState<MobileLayoutMode>(() => {
     try {
       return localStorage.getItem(MOBILE_LAYOUT_STORAGE_KEY) === 'list' ? 'list' : 'grid';
@@ -96,10 +108,25 @@ export function MobileNavView({
     }
   });
 
-  const pillRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
-  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const pagerRef = useRef<HTMLDivElement>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
+  const pickerItemRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
 
-  // Build ordered category tabs: Position 2 — desktop standalone items merged as first "常用" tab, then folders
+  const swipeRef = useRef<{
+    startX: number;
+    startY: number;
+    startTime: number;
+    axis: 'x' | 'y' | null;
+    lastDx: number;
+  } | null>(null);
+
+  const animRef = useRef<{
+    targetTabId: string | null;
+    timerId: number;
+  } | null>(null);
+  const pendingResetRef = useRef(false);
+
+  // Build ordered category tabs: desktop standalone items merged as first "常用" tab, then folders
   const tabs = useMemo<MobileCategoryTab[]>(() => {
     const list: MobileCategoryTab[] = [];
     const rootItems = items.filter((i) => i.parentId === null).sort(compareReadingOrder);
@@ -148,6 +175,20 @@ export function MobileNavView({
   }, [tabs, activeTabId]);
 
   const activeTab = resolvedTabIndex >= 0 ? tabs[resolvedTabIndex] : null;
+  const prevTab = resolvedTabIndex > 0 ? tabs[resolvedTabIndex - 1] : null;
+  const nextTab =
+    resolvedTabIndex >= 0 && resolvedTabIndex < tabs.length - 1
+      ? tabs[resolvedTabIndex + 1]
+      : null;
+
+  const selectTab = useCallback((tabId: string) => {
+    setActiveTabId(tabId);
+    try {
+      sessionStorage.setItem(MOBILE_TAB_STORAGE_KEY, tabId);
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, []);
 
   // Keep persisted activeTabId valid (e.g. fall back cleanly when locking hides a private folder)
   useEffect(() => {
@@ -162,21 +203,72 @@ export function MobileNavView({
     }
   }, [activeTab, activeTabId]);
 
-  // Smoothly keep the selected category pill centered inside the sticky tab bar
-  useEffect(() => {
-    if (!activeTab || query.trim()) return;
-    const btn = pillRefs.current.get(activeTab.id);
-    btn?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
-  }, [activeTab, query]);
-
-  const selectTab = (tabId: string) => {
-    setActiveTabId(tabId);
-    try {
-      sessionStorage.setItem(MOBILE_TAB_STORAGE_KEY, tabId);
-    } catch {
-      // Ignore storage quota errors
+  // Reset track transform in the exact commit frame after switching activeTabId
+  useLayoutEffect(() => {
+    if (!pendingResetRef.current) return;
+    pendingResetRef.current = false;
+    const track = trackRef.current;
+    if (track) {
+      track.style.transition = 'none';
+      track.style.transform = 'translate3d(0, 0, 0)';
     }
-  };
+  }, [activeTab?.id]);
+
+  // Scroll the active category row into view when the bottom picker opens
+  useEffect(() => {
+    if (!pickerOpen || !activeTab) return;
+    const btn = pickerItemRefs.current.get(activeTab.id);
+    btn?.scrollIntoView({ block: 'nearest' });
+  }, [pickerOpen, activeTab]);
+
+  // Close picker and clear active timers on search or unmount
+  const trimmedQuery = query.trim();
+  const isSearching = trimmedQuery.length > 0;
+
+  useEffect(() => {
+    if (isSearching && pickerOpen) {
+      setPickerOpen(false);
+    }
+  }, [isSearching, pickerOpen]);
+
+  useEffect(() => {
+    return () => {
+      if (animRef.current) {
+        window.clearTimeout(animRef.current.timerId);
+        animRef.current = null;
+      }
+    };
+  }, []);
+
+  const settlePendingAnimation = useCallback(
+    (synchronous = false) => {
+      const pending = animRef.current;
+      if (!pending) return;
+      animRef.current = null;
+      window.clearTimeout(pending.timerId);
+
+      const track = trackRef.current;
+      if (pending.targetTabId) {
+        pendingResetRef.current = true;
+        if (synchronous) {
+          flushSync(() => {
+            selectTab(pending.targetTabId!);
+          });
+          if (track) {
+            track.style.transition = 'none';
+            track.style.transform = 'translate3d(0, 0, 0)';
+            pendingResetRef.current = false;
+          }
+        } else {
+          selectTab(pending.targetTabId);
+        }
+      } else if (track) {
+        track.style.transition = 'none';
+        track.style.transform = 'translate3d(0, 0, 0)';
+      }
+    },
+    [selectTab]
+  );
 
   const toggleLayoutMode = () => {
     setLayoutMode((prev) => {
@@ -190,12 +282,17 @@ export function MobileNavView({
     });
   };
 
-  const trimmedQuery = query.trim();
-  const isSearching = trimmedQuery.length > 0;
-
   const searchResults = useMemo(() => {
     if (!isSearching) {
-      return { matchedTabs: [] as MobileCategoryTab[], matchedItems: [] as Array<{ item: BookmarkItem; categoryTitle: string; isPrivate: boolean; score: number }> };
+      return {
+        matchedTabs: [] as MobileCategoryTab[],
+        matchedItems: [] as Array<{
+          item: BookmarkItem;
+          categoryTitle: string;
+          isPrivate: boolean;
+          score: number;
+        }>,
+      };
     }
     const tabMap = new Map(tabs.map((t) => [t.id, t]));
     const matchedTabs = tabs
@@ -237,31 +334,80 @@ export function MobileNavView({
   }, [isSearching, items, tabs, trimmedQuery]);
 
   const handleTouchStart = (e: ReactTouchEvent<HTMLDivElement>) => {
-    if (isSearching || tabs.length <= 1 || e.touches.length !== 1) {
-      touchStartRef.current = null;
+    if (pickerOpen || isSearching || tabs.length === 0 || e.touches.length !== 1) {
+      swipeRef.current = null;
       return;
     }
+    if (animRef.current) {
+      settlePendingAnimation(true);
+    }
     const t = e.touches[0];
-    touchStartRef.current = { x: t.clientX, y: t.clientY };
+    swipeRef.current = {
+      startX: t.clientX,
+      startY: t.clientY,
+      startTime: performance.now(),
+      axis: null,
+      lastDx: 0,
+    };
   };
 
-  const handleTouchEnd = (e: ReactTouchEvent<HTMLDivElement>) => {
-    const start = touchStartRef.current;
-    touchStartRef.current = null;
-    if (!start || isSearching || tabs.length <= 1 || e.changedTouches.length === 0) return;
+  const handleTouchMove = (e: ReactTouchEvent<HTMLDivElement>) => {
+    const s = swipeRef.current;
+    if (!s || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const dx = t.clientX - s.startX;
+    const dy = t.clientY - s.startY;
 
-    const t = e.changedTouches[0];
-    const dx = t.clientX - start.x;
-    const dy = t.clientY - start.y;
-
-    // Require strong horizontal swipe intent so vertical scrolling is never hijacked
-    if (Math.abs(dx) < 52 || Math.abs(dx) <= Math.abs(dy) * 1.6) return;
-
-    if (dx < 0 && resolvedTabIndex < tabs.length - 1) {
-      selectTab(tabs[resolvedTabIndex + 1].id);
-    } else if (dx > 0 && resolvedTabIndex > 0) {
-      selectTab(tabs[resolvedTabIndex - 1].id);
+    if (s.axis === null) {
+      if (Math.max(Math.abs(dx), Math.abs(dy)) <= 8) return;
+      s.axis = Math.abs(dy) >= Math.abs(dx) ? 'y' : 'x';
     }
+
+    if (s.axis !== 'x') return;
+
+    s.lastDx = dx;
+    const isOutOfBounds = (dx > 0 && !prevTab) || (dx < 0 && !nextTab);
+    const visualDx = isOutOfBounds ? dx * 0.28 : dx;
+
+    const track = trackRef.current;
+    if (track) {
+      track.style.transition = 'none';
+      track.style.transform = `translate3d(${visualDx}px, 0, 0)`;
+    }
+  };
+
+  const finishSwipe = (cancelled: boolean) => {
+    const s = swipeRef.current;
+    swipeRef.current = null;
+    if (!s || s.axis !== 'x') return;
+
+    const track = trackRef.current;
+    if (!track) return;
+
+    const dx = s.lastDx;
+    const elapsed = Math.max(1, performance.now() - s.startTime);
+    const vx = dx / elapsed;
+    const width = pagerRef.current?.clientWidth || window.innerWidth || 360;
+
+    const targetTab =
+      !cancelled && (Math.abs(dx) > width * 0.22 || (Math.abs(dx) > 24 && Math.abs(vx) > 0.35))
+        ? dx < 0
+          ? nextTab
+          : prevTab
+        : null;
+
+    track.style.transition = 'transform 210ms cubic-bezier(0.22, 1, 0.36, 1)';
+    track.style.transform = targetTab
+      ? `translate3d(${dx < 0 ? '-100%' : '100%'}, 0, 0)`
+      : 'translate3d(0, 0, 0)';
+
+    const timerId = window.setTimeout(() => {
+      settlePendingAnimation(false);
+    }, 225);
+    animRef.current = {
+      targetTabId: targetTab?.id ?? null,
+      timerId,
+    };
   };
 
   const useWallpaper = settings.canvasBgStyle === 'wallpaper' && Boolean(settings.customBgUrl);
@@ -290,11 +436,7 @@ export function MobileNavView({
             mode === 'grid' ? 'p-3' : 'px-3.5 py-3'
           } ${unlocked ? 'pr-10' : ''}`}
         >
-          <div
-            className={`rounded-xl bg-[var(--bg-subtle)] border border-[var(--border-hair)] flex items-center justify-center shrink-0 ${
-              mode === 'grid' ? 'h-10 w-10' : 'h-10 w-10'
-            }`}
-          >
+          <div className="h-10 w-10 rounded-xl bg-[var(--bg-subtle)] border border-[var(--border-hair)] flex items-center justify-center shrink-0">
             <IconGlyph
               icon={item.icon}
               faviconUrl={item.faviconUrl}
@@ -345,9 +487,56 @@ export function MobileNavView({
     );
   };
 
+  const renderCategoryPanel = (tab: MobileCategoryTab, offsetPct: string) => (
+    <section
+      key={tab.id}
+      style={{ left: offsetPct }}
+      className="absolute top-0 bottom-0 w-full overflow-y-auto overscroll-y-contain px-3.5 pt-2 pb-24"
+    >
+      <div className="max-w-2xl mx-auto space-y-4">
+        {tab.items.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-[var(--border-strong)] bg-[var(--bg-card)]/60 py-14 px-4 text-center space-y-2.5">
+            <p className="text-xs text-[var(--ink-muted)]">该分类下暂无书签</p>
+            {unlocked && (
+              <button
+                type="button"
+                onClick={() => onCreateItem(tab.kind === 'folder' ? tab.id : null)}
+                className="inline-flex items-center gap-1 rounded-full bg-[var(--accent-orange)] px-3.5 py-1.5 text-xs font-medium text-white cursor-pointer"
+              >
+                <Plus size={13} />
+                <span>添加到此分类</span>
+              </button>
+            )}
+          </div>
+        ) : (
+          <div
+            className={
+              layoutMode === 'grid' ? 'grid grid-cols-2 gap-2.5' : 'flex flex-col gap-2'
+            }
+          >
+            {tab.items.map((item) => renderBookmarkCard(item, layoutMode))}
+          </div>
+        )}
+
+        {unlocked && tab.folder && onEditFolder && (
+          <div className="flex justify-center pt-1">
+            <button
+              type="button"
+              onClick={() => onEditFolder(tab.folder!)}
+              className="inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-medium bg-[var(--bg-card)]/85 border border-[var(--border-hair)] text-[var(--ink-secondary)] hover:text-[var(--ink-main)] cursor-pointer"
+            >
+              <FolderCog size={13} />
+              <span>编辑此分类</span>
+            </button>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+
   return (
     <div
-      className={`relative h-full w-full overflow-hidden text-[var(--ink-main)] ${
+      className={`relative h-full w-full overflow-hidden flex flex-col text-[var(--ink-main)] ${
         useAurora ? 'canvas-bg-aurora' : 'bg-[var(--bg-canvas)]'
       }`}
     >
@@ -365,238 +554,194 @@ export function MobileNavView({
         </>
       )}
 
-      <div className="relative h-full w-full overflow-y-auto overscroll-y-contain pb-8">
-      {/* Layer 1: Minimal Top Bar */}
-      <header className="px-3.5 pt-3.5 pb-2 flex items-center justify-between gap-2 max-w-2xl mx-auto">
-        <div className="min-w-0 flex items-center gap-2">
-          <span
-            className="inline-block h-2.5 w-2.5 rounded-full shrink-0"
-            style={{ backgroundColor: 'var(--accent-orange)' }}
-          />
-          <span className="text-[15px] font-bold tracking-tight truncate">
-            {settings.siteTitle}
-          </span>
-          {settings.homeLinkEnabled && settings.homeLinkUrl && (
-            <a
-              href={settings.homeLinkUrl}
-              target={settings.openTarget}
-              rel={settings.openTarget === '_blank' ? 'noopener noreferrer' : undefined}
-              className="inline-flex items-center gap-1 rounded-full bg-[var(--bg-card)]/85 border border-[var(--border-hair)] px-2 py-0.5 text-[11px] font-medium text-[var(--ink-secondary)] shrink-0"
-            >
-              <span>{settings.homeLinkLabel || 'home'}</span>
-              <ExternalLink size={10} />
-            </a>
-          )}
-        </div>
-
-        <div className="flex items-center gap-1 shrink-0">
-          <button
-            type="button"
-            onClick={onLockToggle}
-            className={`relative inline-flex h-8 items-center gap-1 rounded-full px-2.5 text-xs font-medium border transition-colors cursor-pointer ${
-              unlocked
-                ? 'bg-amber-500/12 border-amber-500/30 text-amber-600 dark:text-amber-400'
-                : 'bg-[var(--bg-card)]/90 border-[var(--border-hair)] text-[var(--ink-secondary)]'
-            }`}
-            title={unlocked ? '上锁并隐藏私密内容' : '解锁管理与私密分类'}
-          >
-            {unlocked ? <Unlock size={13} /> : <Lock size={13} />}
-            {unlocked && <span>上锁</span>}
-            {!unlocked && hasPrivateHidden && (
-              <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent-orange)]" />
+      {/* Top Fixed Area: Minimal Header + Embedded Instant Search */}
+      <div className="relative z-20 shrink-0">
+        <header className="px-3.5 pt-3.5 pb-2 flex items-center justify-between gap-2 max-w-2xl mx-auto">
+          <div className="min-w-0 flex items-center gap-2">
+            <span
+              className="inline-block h-2.5 w-2.5 rounded-full shrink-0"
+              style={{ backgroundColor: 'var(--accent-orange)' }}
+            />
+            <span className="text-[15px] font-bold tracking-tight truncate">
+              {settings.siteTitle}
+            </span>
+            {settings.homeLinkEnabled && settings.homeLinkUrl && (
+              <a
+                href={settings.homeLinkUrl}
+                target={settings.openTarget}
+                rel={settings.openTarget === '_blank' ? 'noopener noreferrer' : undefined}
+                className="inline-flex items-center gap-1 rounded-full bg-[var(--bg-card)]/85 border border-[var(--border-hair)] px-2 py-0.5 text-[11px] font-medium text-[var(--ink-secondary)] shrink-0"
+              >
+                <span>{settings.homeLinkLabel || 'home'}</span>
+                <ExternalLink size={10} />
+              </a>
             )}
-          </button>
+          </div>
 
-          {unlocked && (
+          <div className="flex items-center gap-1 shrink-0">
             <button
               type="button"
-              onClick={() => onCreateItem(activeTab?.kind === 'folder' ? activeTab.id : null)}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--accent-orange)] text-white shadow-sm cursor-pointer"
-              title="快速新增书签"
-              aria-label="快速新增书签"
+              onClick={onLockToggle}
+              className={`relative inline-flex h-8 items-center gap-1 rounded-full px-2.5 text-xs font-medium border transition-colors cursor-pointer ${
+                unlocked
+                  ? 'bg-amber-500/12 border-amber-500/30 text-amber-600 dark:text-amber-400'
+                  : 'bg-[var(--bg-card)]/90 border-[var(--border-hair)] text-[var(--ink-secondary)]'
+              }`}
+              title={unlocked ? '上锁并隐藏私密内容' : '解锁管理与私密分类'}
             >
-              <Plus size={15} />
+              {unlocked ? <Unlock size={13} /> : <Lock size={13} />}
+              {unlocked && <span>上锁</span>}
+              {!unlocked && hasPrivateHidden && (
+                <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent-orange)]" />
+              )}
             </button>
-          )}
 
-          <button
-            type="button"
-            onClick={toggleLayoutMode}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--bg-card)]/90 border border-[var(--border-hair)] text-[var(--ink-secondary)] cursor-pointer"
-            title={layoutMode === 'grid' ? '切换为单列列表' : '切换为双列卡片'}
-            aria-label="切换卡片列数"
-          >
-            {layoutMode === 'grid' ? <List size={14} /> : <LayoutGrid size={14} />}
-          </button>
+            {unlocked && (
+              <button
+                type="button"
+                onClick={() => onCreateItem(activeTab?.kind === 'folder' ? activeTab.id : null)}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--accent-orange)] text-white shadow-sm cursor-pointer"
+                title="快速新增书签"
+                aria-label="快速新增书签"
+              >
+                <Plus size={15} />
+              </button>
+            )}
 
-          <button
-            type="button"
-            onClick={onToggleDark}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--bg-card)]/90 border border-[var(--border-hair)] text-[var(--ink-secondary)] cursor-pointer"
-            title="切换深浅色主题"
-            aria-label="切换深浅色主题"
-          >
-            {dark ? <Sun size={14} /> : <Moon size={14} />}
-          </button>
-
-          <button
-            type="button"
-            onClick={onSwitchToCanvas}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--bg-card)]/90 border border-[var(--border-hair)] text-[var(--ink-secondary)] cursor-pointer"
-            title="切换至二维画布视图"
-            aria-label="切换至二维画布视图"
-          >
-            <MapIcon size={14} />
-          </button>
-
-          {unlocked && (
             <button
               type="button"
-              onClick={onOpenSettings}
+              onClick={toggleLayoutMode}
               className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--bg-card)]/90 border border-[var(--border-hair)] text-[var(--ink-secondary)] cursor-pointer"
-              title="站点设置"
-              aria-label="站点设置"
+              title={layoutMode === 'grid' ? '切换为单列列表' : '切换为双列卡片'}
+              aria-label="切换卡片列数"
             >
-              <Settings size={14} />
+              {layoutMode === 'grid' ? <List size={14} /> : <LayoutGrid size={14} />}
             </button>
-          )}
-        </div>
-      </header>
 
-      {/* Layer 2: Embedded Instant Search Box */}
-      <div className="px-3.5 pb-2.5 max-w-2xl mx-auto">
-        <div className="relative flex items-center rounded-2xl bg-[var(--bg-card)]/92 backdrop-blur-md border border-[var(--border-hair)] shadow-sm focus-within:border-[var(--accent-orange)] transition-colors">
-          <Search size={15} className="ml-3.5 text-[var(--ink-muted)] shrink-0" />
-          <input
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索书签、域名、拼音首字母或分类..."
-            className="w-full bg-transparent px-2.5 py-2.5 text-[13.5px] text-[var(--ink-main)] placeholder:text-[var(--ink-muted)] outline-none"
-          />
-          {query && (
             <button
               type="button"
-              onClick={() => setQuery('')}
-              className="mr-2 h-7 w-7 rounded-full flex items-center justify-center text-[var(--ink-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] cursor-pointer shrink-0"
-              aria-label="清空搜索"
+              onClick={onToggleDark}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--bg-card)]/90 border border-[var(--border-hair)] text-[var(--ink-secondary)] cursor-pointer"
+              title="切换深浅色主题"
+              aria-label="切换深浅色主题"
             >
-              <X size={14} />
+              {dark ? <Sun size={14} /> : <Moon size={14} />}
             </button>
-          )}
+
+            <button
+              type="button"
+              onClick={onSwitchToCanvas}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--bg-card)]/90 border border-[var(--border-hair)] text-[var(--ink-secondary)] cursor-pointer"
+              title="切换至二维画布视图"
+              aria-label="切换至二维画布视图"
+            >
+              <MapIcon size={14} />
+            </button>
+
+            {unlocked && (
+              <button
+                type="button"
+                onClick={onOpenSettings}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--bg-card)]/90 border border-[var(--border-hair)] text-[var(--ink-secondary)] cursor-pointer"
+                title="站点设置"
+                aria-label="站点设置"
+              >
+                <Settings size={14} />
+              </button>
+            )}
+          </div>
+        </header>
+
+        <div className="px-3.5 pb-2 max-w-2xl mx-auto">
+          <div className="relative flex items-center rounded-2xl bg-[var(--bg-card)]/92 backdrop-blur-md border border-[var(--border-hair)] shadow-sm focus-within:border-[var(--accent-orange)] transition-colors">
+            <Search size={15} className="ml-3.5 text-[var(--ink-muted)] shrink-0" />
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="搜索书签、域名、拼音首字母或分类..."
+              className="w-full bg-transparent px-2.5 py-2.5 text-[13.5px] text-[var(--ink-main)] placeholder:text-[var(--ink-muted)] outline-none"
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => setQuery('')}
+                className="mr-2 h-7 w-7 rounded-full flex items-center justify-center text-[var(--ink-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] cursor-pointer shrink-0"
+                aria-label="清空搜索"
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Layer 3: Sticky Horizontal Category Tabs (hidden while searching) */}
-      {!isSearching && tabs.length > 0 && (
-        <nav
-          aria-label="书签分类"
-          className="sticky top-0 z-20 backdrop-blur-md bg-[var(--bg-canvas)]/82 border-b border-[var(--border-hair)]/70"
-        >
-          <div className="max-w-2xl mx-auto px-3.5 py-2 flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            {tabs.map((tab) => {
-              const isActive = activeTab?.id === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  ref={(el) => {
-                    if (el) pillRefs.current.set(tab.id, el);
-                    else pillRefs.current.delete(tab.id);
-                  }}
-                  type="button"
-                  onClick={() => selectTab(tab.id)}
-                  className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[13px] font-semibold whitespace-nowrap shrink-0 transition-all cursor-pointer ${
-                    isActive
-                      ? 'bg-[var(--ink-main)] text-[var(--bg-card)] shadow-sm'
-                      : tab.isPrivate
-                        ? 'bg-gradient-to-r from-orange-500/12 to-amber-500/10 border border-orange-500/35 text-[var(--ink-main)]'
-                        : 'bg-[var(--bg-card)]/90 border border-[var(--border-hair)] text-[var(--ink-secondary)]'
-                  }`}
-                >
-                  <span
-                    className="h-2 w-2 rounded-full shrink-0"
-                    style={{
-                      backgroundColor: tab.isPrivate
-                        ? '#ff5500'
-                        : tab.accent || 'var(--accent-orange)',
-                    }}
-                  />
-                  {tab.isPrivate && (
-                    <Lock
-                      size={11}
-                      className={isActive ? 'text-amber-300 shrink-0' : 'text-amber-500 shrink-0'}
-                    />
-                  )}
-                  <span>{tab.title}</span>
-                </button>
-              );
-            })}
-          </div>
-        </nav>
-      )}
-
-      {/* Layer 4: Search Results OR Single-Category Paged Area with Horizontal Swipe */}
-      <main className="max-w-2xl mx-auto px-3.5 pt-3.5">
+      {/* Main Content Area: Search Results OR Full-Width 1:1 Interactive Swipe Pager */}
+      <main className="relative flex-1 min-h-0 overflow-hidden">
         {loading ? (
-          <div className="py-20 text-center text-sm text-[var(--ink-muted)]">正在加载书签...</div>
+          <div className="h-full w-full flex items-center justify-center text-sm text-[var(--ink-muted)]">
+            正在加载书签...
+          </div>
         ) : isSearching ? (
-          <div className="space-y-4">
-            {searchResults.matchedTabs.length > 0 && (
-              <div className="space-y-2">
-                <div className="text-[11px] font-semibold text-[var(--ink-muted)] px-0.5">
-                  分类快捷跳转
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {searchResults.matchedTabs.map((tab) => (
-                    <button
-                      key={tab.id}
-                      type="button"
-                      onClick={() => {
-                        setQuery('');
-                        selectTab(tab.id);
-                      }}
-                      className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium bg-[var(--bg-card)] border border-[var(--border-hair)] text-[var(--ink-main)] shadow-sm cursor-pointer"
-                    >
-                      <span
-                        className="h-2 w-2 rounded-full shrink-0"
-                        style={{
-                          backgroundColor: tab.isPrivate
-                            ? '#ff5500'
-                            : tab.accent || 'var(--accent-orange)',
+          <div className="h-full w-full overflow-y-auto overscroll-y-contain px-3.5 pt-2 pb-24">
+            <div className="max-w-2xl mx-auto space-y-4">
+              {searchResults.matchedTabs.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-[11px] font-semibold text-[var(--ink-muted)] px-0.5">
+                    分类快捷跳转
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {searchResults.matchedTabs.map((tab) => (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => {
+                          setQuery('');
+                          selectTab(tab.id);
                         }}
-                      />
-                      {tab.isPrivate && <Lock size={11} className="text-amber-500 shrink-0" />}
-                      <span>{tab.title}</span>
-                      <span className="text-[10px] text-[var(--ink-muted)]">
-                        ({tab.items.length})
-                      </span>
-                    </button>
-                  ))}
+                        className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium bg-[var(--bg-card)] border border-[var(--border-hair)] text-[var(--ink-main)] shadow-sm cursor-pointer"
+                      >
+                        <span
+                          className="h-2 w-2 rounded-full shrink-0"
+                          style={{
+                            backgroundColor: tab.isPrivate
+                              ? '#ff5500'
+                              : tab.accent || 'var(--accent-orange)',
+                          }}
+                        />
+                        {tab.isPrivate && <Lock size={11} className="text-amber-500 shrink-0" />}
+                        <span>{tab.title}</span>
+                        <span className="text-[10px] text-[var(--ink-muted)]">
+                          ({tab.items.length})
+                        </span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
 
-            {searchResults.matchedItems.length === 0 ? (
-              searchResults.matchedTabs.length === 0 && (
-                <div className="py-16 text-center text-xs text-[var(--ink-muted)]">
-                  没有找到匹配 “{trimmedQuery}” 的书签或分类
+              {searchResults.matchedItems.length === 0 ? (
+                searchResults.matchedTabs.length === 0 && (
+                  <div className="py-16 text-center text-xs text-[var(--ink-muted)]">
+                    没有找到匹配 “{trimmedQuery}” 的书签或分类
+                  </div>
+                )
+              ) : (
+                <div className="space-y-2">
+                  <div className="text-[11px] font-semibold text-[var(--ink-muted)] px-0.5">
+                    匹配书签 ({searchResults.matchedItems.length})
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    {searchResults.matchedItems.map((entry) =>
+                      renderBookmarkCard(entry.item, 'list', entry.categoryTitle)
+                    )}
+                  </div>
                 </div>
-              )
-            ) : (
-              <div className="space-y-2">
-                <div className="text-[11px] font-semibold text-[var(--ink-muted)] px-0.5">
-                  匹配书签 ({searchResults.matchedItems.length})
-                </div>
-                <div className="flex flex-col gap-2">
-                  {searchResults.matchedItems.map((entry) =>
-                    renderBookmarkCard(entry.item, 'list', entry.categoryTitle)
-                  )}
-                </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         ) : !activeTab ? (
-          <div className="py-20 text-center space-y-3">
+          <div className="h-full w-full flex flex-col items-center justify-center gap-3 px-4 text-center">
             <p className="text-sm text-[var(--ink-muted)]">当前暂无可展示的书签分类</p>
             {unlocked && (
               <button
@@ -611,79 +756,138 @@ export function MobileNavView({
           </div>
         ) : (
           <div
+            ref={pagerRef}
             onTouchStart={handleTouchStart}
-            onTouchEnd={handleTouchEnd}
-            className="min-h-[calc(100dvh-210px)] flex flex-col justify-between gap-6"
+            onTouchMove={handleTouchMove}
+            onTouchEnd={() => finishSwipe(false)}
+            onTouchCancel={() => finishSwipe(true)}
+            style={{ touchAction: 'pan-y' }}
+            className="relative h-full w-full overflow-hidden"
           >
-            <div className="space-y-4">
-              {activeTab.items.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-[var(--border-strong)] bg-[var(--bg-card)]/60 py-14 px-4 text-center space-y-2.5">
-                  <p className="text-xs text-[var(--ink-muted)]">该分类下暂无书签</p>
-                  {unlocked && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        onCreateItem(activeTab.kind === 'folder' ? activeTab.id : null)
-                      }
-                      className="inline-flex items-center gap-1 rounded-full bg-[var(--accent-orange)] px-3.5 py-1.5 text-xs font-medium text-white cursor-pointer"
-                    >
-                      <Plus size={13} />
-                      <span>添加到此分类</span>
-                    </button>
-                  )}
-                </div>
-              ) : (
-                <div
-                  className={
-                    layoutMode === 'grid' ? 'grid grid-cols-2 gap-2.5' : 'flex flex-col gap-2'
-                  }
-                >
-                  {activeTab.items.map((item) => renderBookmarkCard(item, layoutMode))}
-                </div>
-              )}
-
-              {unlocked && activeTab.folder && onEditFolder && (
-                <div className="flex justify-center pt-1">
-                  <button
-                    type="button"
-                    onClick={() => onEditFolder(activeTab.folder!)}
-                    className="inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-medium bg-[var(--bg-card)]/85 border border-[var(--border-hair)] text-[var(--ink-secondary)] hover:text-[var(--ink-main)] cursor-pointer"
-                  >
-                    <FolderCog size={13} />
-                    <span>编辑此分类</span>
-                  </button>
-                </div>
-              )}
+            <div
+              ref={trackRef}
+              onTransitionEnd={(e) => {
+                if (e.target === trackRef.current && e.propertyName === 'transform') {
+                  settlePendingAnimation(false);
+                }
+              }}
+              style={{ willChange: 'transform' }}
+              className="relative h-full w-full"
+            >
+              {prevTab && renderCategoryPanel(prevTab, '-100%')}
+              {renderCategoryPanel(activeTab, '0%')}
+              {nextTab && renderCategoryPanel(nextTab, '100%')}
             </div>
-
-            {tabs.length > 1 && (
-              <footer className="pt-2 pb-2 flex flex-col items-center gap-2 select-none">
-                {tabs.length <= 14 && (
-                  <div className="flex items-center gap-1.5">
-                    {tabs.map((tab, idx) => (
-                      <button
-                        key={tab.id}
-                        type="button"
-                        onClick={() => selectTab(tab.id)}
-                        aria-label={`切换到 ${tab.title}`}
-                        className={`h-1.5 rounded-full transition-all cursor-pointer ${
-                          idx === resolvedTabIndex
-                            ? 'w-4 bg-[var(--ink-main)]'
-                            : 'w-1.5 bg-[var(--border-strong)]'
-                        }`}
-                      />
-                    ))}
-                  </div>
-                )}
-                <div className="text-[11px] text-[var(--ink-muted)]/80">
-                  {resolvedTabIndex + 1} / {tabs.length} · 左右滑动切换分类
-                </div>
-              </footer>
-            )}
           </div>
         )}
       </main>
-      </div>
+
+      {/* Bottom-Center Category Picker Popover */}
+      {!isSearching && !loading && tabs.length > 0 && pickerOpen && (
+        <>
+          <div
+            aria-hidden="true"
+            onClick={() => setPickerOpen(false)}
+            className="fixed inset-0 z-40 bg-black/28 backdrop-blur-[2px]"
+          />
+          <div
+            role="dialog"
+            aria-label="选择分类"
+            className="fixed left-1/2 -translate-x-1/2 bottom-[calc(4.1rem+env(safe-area-inset-bottom))] z-50 w-[min(310px,calc(100vw-28px))] max-h-[56dvh] flex flex-col bento-modal overflow-hidden shadow-2xl"
+          >
+            <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-[var(--border-hair)] shrink-0">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold text-[var(--ink-main)]">选择分类</span>
+                <span className="text-[11px] text-[var(--ink-muted)]">共 {tabs.length} 类</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPickerOpen(false)}
+                className="h-6 w-6 rounded-full flex items-center justify-center text-[var(--ink-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] cursor-pointer"
+                aria-label="关闭分类列表"
+              >
+                <X size={13} />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto overscroll-y-contain p-2 flex flex-col gap-1">
+              {tabs.map((tab) => {
+                const isActive = tab.id === activeTab?.id;
+                return (
+                  <button
+                    key={tab.id}
+                    ref={(el) => {
+                      if (el) pickerItemRefs.current.set(tab.id, el);
+                      else pickerItemRefs.current.delete(tab.id);
+                    }}
+                    type="button"
+                    onClick={() => {
+                      settlePendingAnimation(true);
+                      selectTab(tab.id);
+                      setPickerOpen(false);
+                    }}
+                    className={`w-full flex items-center justify-between gap-2.5 rounded-xl px-3 py-2 text-left text-[13px] transition-colors cursor-pointer ${
+                      isActive
+                        ? 'bg-[var(--bg-subtle)] text-[var(--ink-main)] font-semibold'
+                        : 'text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)]/65 hover:text-[var(--ink-main)]'
+                    }`}
+                  >
+                    <div className="min-w-0 flex items-center gap-2">
+                      <span
+                        className="h-2.5 w-2.5 rounded-full shrink-0"
+                        style={{
+                          backgroundColor: tab.isPrivate
+                            ? '#ff5500'
+                            : tab.accent || 'var(--accent-orange)',
+                        }}
+                      />
+                      {tab.isPrivate && <Lock size={11} className="text-amber-500 shrink-0" />}
+                      <span className="truncate">{tab.title}</span>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-[11px] font-mono text-[var(--ink-muted)]">
+                        {tab.items.length}
+                      </span>
+                      {isActive && <Check size={14} className="text-[var(--accent-orange)]" />}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Bottom-Center Floating Category Pill */}
+      {!isSearching && !loading && activeTab && (
+        <button
+          type="button"
+          onClick={() => setPickerOpen((v) => !v)}
+          className="fixed left-1/2 -translate-x-1/2 bottom-[calc(1rem+env(safe-area-inset-bottom))] z-50 pill-surface rounded-full pl-3.5 pr-3 py-2 shadow-lg flex items-center gap-2 text-[13px] font-semibold cursor-pointer active:scale-95 transition-transform max-w-[calc(100vw-32px)]"
+          aria-expanded={pickerOpen}
+          aria-label="切换书签分类"
+        >
+          <span
+            className="h-2.5 w-2.5 rounded-full shrink-0"
+            style={{
+              backgroundColor: activeTab.isPrivate
+                ? '#ff5500'
+                : activeTab.accent || 'var(--accent-orange)',
+            }}
+          />
+          {activeTab.isPrivate && <Lock size={11} className="text-amber-500 shrink-0" />}
+          <span className="truncate max-w-[150px] text-[var(--ink-main)]">{activeTab.title}</span>
+          <span className="text-[11px] font-medium text-[var(--ink-muted)] tabular-nums shrink-0">
+            {resolvedTabIndex + 1}/{tabs.length}
+          </span>
+          <ChevronUp
+            size={14}
+            className={`text-[var(--ink-muted)] shrink-0 transition-transform duration-150 ${
+              pickerOpen ? 'rotate-180' : ''
+            }`}
+          />
+        </button>
+      )}
     </div>
   );
 }
