@@ -63,6 +63,7 @@ interface ZoneCardProps {
   isSelected: boolean;
   isResizing: boolean;
   isError?: boolean;
+  isNewlyCreated?: boolean;
   dragOffset?: { dxPx: number; dyPx: number } | null;
 }
 
@@ -76,6 +77,7 @@ export function ZoneCard({
   isSelected,
   isResizing,
   isError = false,
+  isNewlyCreated = false,
   dragOffset,
 }: ZoneCardProps) {
   const box = computeZoneBox(zone, grid);
@@ -118,7 +120,7 @@ export function ZoneCard({
         willChange: isActivelyDragged ? 'transform' : undefined,
         zIndex: isActivelyDragged ? 34 : isSelected || isResizing ? 4 : 2,
       }}
-      className="pointer-events-none select-none"
+      className={`pointer-events-none select-none ${isNewlyCreated ? 'newly-created-pulse' : ''}`}
     />
   );
 }
@@ -128,10 +130,14 @@ interface ZoneOverlayProps {
   grid: GridConfig;
   editMode: boolean;
   isResizing: boolean;
+  isInlineEditing?: boolean;
   dragOffset?: { dxPx: number; dyPx: number } | null;
   onZonePointerDown: (e: ReactPointerEvent, zone: ZoneContainer) => void;
   onZoneResizePointerDown: (e: ReactPointerEvent, zone: ZoneContainer) => void;
   onEditZone: (zone: ZoneContainer) => void;
+  onStartInlineEdit?: (zoneId: string) => void;
+  onCommitInlineTitle?: (zone: ZoneContainer, nextTitle: string) => void;
+  onCancelInlineEdit?: () => void;
   onOpenContextMenu?: (e: ReactMouseEvent, target: ContextMenuTarget) => void;
 }
 
@@ -144,15 +150,42 @@ export function ZoneOverlay({
   grid,
   editMode,
   isResizing,
+  isInlineEditing = false,
   dragOffset,
   onZonePointerDown,
   onZoneResizePointerDown,
   onEditZone,
+  onStartInlineEdit,
+  onCommitInlineTitle,
+  onCancelInlineEdit,
   onOpenContextMenu,
 }: ZoneOverlayProps) {
   const box = computeZoneBox(zone, grid);
   const isActivelyDragged = Boolean(dragOffset);
   const skipTransition = useSuppressDropTransition(isActivelyDragged);
+  const [draftTitle, setDraftTitle] = useState(zone.title);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (isInlineEditing) {
+      setDraftTitle(zone.title);
+      const raf = window.requestAnimationFrame(() => {
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      });
+      return () => window.cancelAnimationFrame(raf);
+    }
+  }, [isInlineEditing, zone.title]);
+
+  const commitTitle = () => {
+    const trimmed = draftTitle.trim();
+    if (trimmed) {
+      onCommitInlineTitle?.(zone, trimmed);
+    } else {
+      setDraftTitle(zone.title);
+      onCancelInlineEdit?.();
+    }
+  };
 
   const handleZoneContextMenu = (e: ReactMouseEvent) => {
     if (!onOpenContextMenu) return;
@@ -185,43 +218,71 @@ export function ZoneOverlay({
       {/* Dedicated 28px tray header bar integrated into top zone area */}
       <div
         onPointerDown={
-          editMode
+          editMode && !isInlineEditing
             ? (e) => {
                 onZonePointerDown(e, zone);
               }
             : undefined
         }
         onDoubleClick={
-          editMode
+          editMode && !isInlineEditing
             ? (e) => {
                 e.stopPropagation();
-                onEditZone(zone);
+                if (onStartInlineEdit) onStartInlineEdit(zone.id);
+                else onEditZone(zone);
               }
             : undefined
         }
         onContextMenu={editMode ? handleZoneContextMenu : undefined}
         className={`absolute top-0 left-0 right-0 h-[28px] pl-[25px] pr-3.5 flex items-center justify-between gap-2 z-20 ${
           editMode
-            ? 'pointer-events-auto cursor-grab active:cursor-grabbing rounded-t-[28px]'
+            ? `pointer-events-auto rounded-t-[28px] ${
+                isInlineEditing ? 'cursor-text' : 'cursor-grab active:cursor-grabbing'
+              }`
             : 'pointer-events-none'
         }`}
         title={
           editMode
-            ? '拖动移动分区及内部卡片（按住 Alt 仅移动分区框）· 双击编辑属性'
+            ? '拖动移动分区及内部卡片（按住 Alt 仅移动分区框）· 双击原地改名'
             : zone.title
         }
       >
-        <div className="flex items-center gap-1.5 min-w-0">
+        <div className="flex items-center gap-1.5 min-w-0 flex-1">
           <span
             className="h-2 w-2 rounded-full shrink-0 translate-y-[0.5px]"
             style={{ backgroundColor: zone.isPrivate ? '#ff5500' : box.accent }}
           />
           {zone.isPrivate && <Lock size={11} className="text-amber-500 shrink-0" />}
-          <span className="text-[12.5px] leading-[18px] font-bold tracking-wide text-[var(--ink-main)] truncate">
-            {zone.title}
-          </span>
+          {editMode && isInlineEditing ? (
+            <input
+              ref={inputRef}
+              type="text"
+              value={draftTitle}
+              onChange={(e) => setDraftTitle(e.target.value)}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  commitTitle();
+                } else if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setDraftTitle(zone.title);
+                  onCancelInlineEdit?.();
+                }
+              }}
+              onBlur={commitTitle}
+              className="w-full min-w-0 bg-[var(--bg-card)]/90 border border-[var(--accent-orange)] rounded-md px-1.5 py-0 text-[12px] leading-[18px] font-bold text-[var(--ink-main)] outline-none"
+            />
+          ) : (
+            <span className="text-[12.5px] leading-[18px] font-bold tracking-wide text-[var(--ink-main)] truncate">
+              {zone.title}
+            </span>
+          )}
         </div>
-        {editMode && (
+        {editMode && !isInlineEditing && (
           <button
             type="button"
             onPointerDown={(e) => e.stopPropagation()}
@@ -230,7 +291,7 @@ export function ZoneOverlay({
               onEditZone(zone);
             }}
             className="h-4.5 w-4.5 rounded-full inline-flex items-center justify-center text-[var(--ink-muted)] hover:text-[var(--ink-main)] hover:bg-[var(--bg-subtle)] cursor-pointer shrink-0"
-            title="编辑分区框"
+            title="编辑分区框详情"
           >
             <Pencil size={11} />
           </button>

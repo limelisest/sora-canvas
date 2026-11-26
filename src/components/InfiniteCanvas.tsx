@@ -93,6 +93,14 @@ interface InfiniteCanvasProps {
   onCycleFolderMode: (folder: FolderContainer) => void;
   onOpenContextMenu?: (e: ReactMouseEvent, target: ContextMenuTarget) => void;
   flyTransition?: boolean;
+  newlyCreatedId?: string | null;
+  inlineEditingId?: string | null;
+  onStartInlineEdit?: (id: string) => void;
+  onCommitInlineZoneTitle?: (zone: ZoneContainer, nextTitle: string) => void;
+  onStartInlineNoteEdit?: (note: NoteWidget) => void;
+  onCommitInlineNote?: (note: NoteWidget, title: string, content: string) => void;
+  onCommitInlineText?: (widget: FreeTextWidget, nextText: string) => void;
+  onCancelInlineEdit?: () => void;
   onStatusToast: (msg: string, tone?: 'error' | 'info') => void;
 }
 
@@ -268,6 +276,14 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
       onCycleFolderMode,
       onOpenContextMenu,
       flyTransition = false,
+      newlyCreatedId = null,
+      inlineEditingId = null,
+      onStartInlineEdit,
+      onCommitInlineZoneTitle,
+      onStartInlineNoteEdit,
+      onCommitInlineNote,
+      onCommitInlineText,
+      onCancelInlineEdit,
       onStatusToast,
     },
     ref
@@ -1136,6 +1152,15 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
 
       if (e.button !== 0 && e.pointerType === 'mouse') return;
 
+      const activeEl = document.activeElement;
+      if (
+        activeEl &&
+        (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA') &&
+        containerRef.current?.contains(activeEl)
+      ) {
+        (activeEl as HTMLElement).blur();
+      }
+
       pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
       if (pointersRef.current.size === 2) {
@@ -1642,6 +1667,21 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
             hitIds.push(n.id);
           }
         }
+        for (const w of widgets) {
+          if (w.kind !== 'text') continue;
+          const tl = w.x * step;
+          const tt = w.y * step;
+          const tw = w.w * grid.cellSize + Math.max(0, w.w - 1) * grid.gap;
+          const th = w.h * grid.cellSize + Math.max(0, w.h - 1) * grid.gap;
+          if (
+            rectsOverlap(
+              { x: minX, y: minY, w: maxX - minX, h: maxY - minY },
+              { x: tl, y: tt, w: tw, h: th }
+            )
+          ) {
+            hitIds.push(w.id);
+          }
+        }
         onSelectIds(hitIds);
         return;
       }
@@ -2085,6 +2125,15 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
       if (e.button !== 0 && e.pointerType === 'mouse') return;
       e.stopPropagation();
       cacheContainerRect();
+
+      if (e.shiftKey || e.metaKey || e.ctrlKey) {
+        const nextSelected = selectedIds.includes(widget.id)
+          ? selectedIds.filter((id) => id !== widget.id)
+          : [...selectedIds, widget.id];
+        onSelectIds(nextSelected);
+        return;
+      }
+
       onSelectIds([widget.id]);
       setTextDrag({
         widget,
@@ -2322,6 +2371,7 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
                 isSelected={selectedIds.includes(zone.id)}
                 isResizing={zoneResize?.zoneId === zone.id}
                 isError={Boolean(isZoneDragging && zoneDrag?.errorMsg)}
+                isNewlyCreated={newlyCreatedId === zone.id}
                 dragOffset={isZoneDragging ? zoneOnlyDragOffset : null}
               />
             );
@@ -2407,6 +2457,8 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
                 isFolderDropTarget={isFolderDropTarget}
                 isMergeTarget={isMergeTarget}
                 isResizing={isResizing}
+                isNewlyCreated={newlyCreatedId === entity.id}
+                isInlineEditing={entity.kind === 'note' && inlineEditingId === entity.id}
                 dragOffset={isMovingThis ? activeDragOffset : null}
                 draggingChildId={childDrag?.started ? childDrag.item.id : null}
                 onCardPointerDown={handleCardPointerDown}
@@ -2417,6 +2469,9 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
                 onOpenFolder={onOpenFolder}
                 onEditEntity={onEditEntity}
                 onRequestEditNote={onRequestEditNote}
+                onStartInlineNoteEdit={onStartInlineNoteEdit}
+                onCommitInlineNote={onCommitInlineNote}
+                onCancelInlineEdit={onCancelInlineEdit}
                 onCycleFolderMode={onCycleFolderMode}
                 onOpenContextMenu={onOpenContextMenu}
               />
@@ -2442,10 +2497,15 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
                 editMode={editMode}
                 isSelected={selectedIds.includes(tw.id)}
                 isResizing={textResize?.widgetId === tw.id}
+                isNewlyCreated={newlyCreatedId === tw.id}
+                isInlineEditing={inlineEditingId === tw.id}
                 dragOffset={isTextMoving ? offset : null}
                 onTextPointerDown={handleTextPointerDown}
                 onTextResizePointerDown={handleTextResizePointerDown}
                 onEditText={(w) => onEditWidget(w)}
+                onStartInlineEdit={onStartInlineEdit}
+                onCommitInlineText={onCommitInlineText}
+                onCancelInlineEdit={onCancelInlineEdit}
                 onOpenContextMenu={onOpenContextMenu}
               />
             );
@@ -2461,10 +2521,14 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
                 grid={grid}
                 editMode={editMode}
                 isResizing={zoneResize?.zoneId === zone.id}
+                isInlineEditing={inlineEditingId === zone.id}
                 dragOffset={isZoneDragging ? zoneOnlyDragOffset : null}
                 onZonePointerDown={handleZonePointerDown}
                 onZoneResizePointerDown={handleZoneResizePointerDown}
                 onEditZone={onEditZone}
+                onStartInlineEdit={onStartInlineEdit}
+                onCommitInlineTitle={onCommitInlineZoneTitle}
+                onCancelInlineEdit={onCancelInlineEdit}
                 onOpenContextMenu={onOpenContextMenu}
               />
             );

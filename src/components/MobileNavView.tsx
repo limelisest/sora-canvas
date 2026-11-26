@@ -11,7 +11,6 @@ import { flushSync } from 'react-dom';
 import {
   Check,
   ChevronUp,
-  ExternalLink,
   FolderCog,
   LayoutGrid,
   List,
@@ -565,17 +564,6 @@ export function MobileNavView({
             <span className="text-[15px] font-bold tracking-tight truncate">
               {settings.siteTitle}
             </span>
-            {settings.homeLinkEnabled && settings.homeLinkUrl && (
-              <a
-                href={settings.homeLinkUrl}
-                target={settings.openTarget}
-                rel={settings.openTarget === '_blank' ? 'noopener noreferrer' : undefined}
-                className="inline-flex items-center gap-1 rounded-full bg-[var(--bg-card)]/85 border border-[var(--border-hair)] px-2 py-0.5 text-[11px] font-medium text-[var(--ink-secondary)] shrink-0"
-              >
-                <span>{settings.homeLinkLabel || 'home'}</span>
-                <ExternalLink size={10} />
-              </a>
-            )}
           </div>
 
           <div className="flex items-center gap-1 shrink-0">

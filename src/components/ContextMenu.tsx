@@ -53,8 +53,8 @@ interface ContextMenuProps {
   onExtractItemToCanvas: (itemId: string) => void;
   onDeleteItem: (itemId: string) => void;
   onCopyUrl: (url: string) => void;
-  onCreateItem: () => void;
-  onCreateFolder: () => void;
+  onCreateItem: (worldX?: number, worldY?: number) => void;
+  onCreateFolder: (worldX?: number, worldY?: number) => void;
   onCreateZone: (worldX?: number, worldY?: number) => void;
   onCreateCarousel: (worldX?: number, worldY?: number) => void;
   onCreateText: (worldX?: number, worldY?: number) => void;
@@ -505,17 +505,32 @@ export function ContextMenu({
           </div>
 
           {target.widget.kind === 'note' ? (
-            <button
-              type="button"
-              className={itemClass}
-              onClick={() => {
-                onRequestEditNote(target.widget as NoteWidget);
-                onClose();
-              }}
-            >
-              <Pencil size={13} className="text-[var(--ink-secondary)]" />
-              <span>{unlocked ? '编辑便签内容' : '解锁并编辑便签'}</span>
-            </button>
+            <>
+              <button
+                type="button"
+                className={itemClass}
+                onClick={() => {
+                  onRequestEditNote(target.widget as NoteWidget);
+                  onClose();
+                }}
+              >
+                <Pencil size={13} className="text-[var(--ink-secondary)]" />
+                <span>{unlocked ? '编辑便签内容' : '解锁并编辑便签'}</span>
+              </button>
+              {unlocked && (
+                <button
+                  type="button"
+                  className={itemClass}
+                  onClick={() => {
+                    onEditWidget(target.widget);
+                    onClose();
+                  }}
+                >
+                  <Pencil size={13} className="text-[var(--ink-secondary)]" />
+                  <span>更多设置（尺寸 / 底色）</span>
+                </button>
+              )}
+            </>
           ) : (
             unlocked && (
               <button
@@ -601,7 +616,7 @@ export function ContextMenu({
                 type="button"
                 className={itemClass}
                 onClick={() => {
-                  onCreateItem();
+                  onCreateItem(target.worldX, target.worldY);
                   onClose();
                 }}
               >
@@ -612,7 +627,7 @@ export function ContextMenu({
                 type="button"
                 className={itemClass}
                 onClick={() => {
-                  onCreateFolder();
+                  onCreateFolder(target.worldX, target.worldY);
                   onClose();
                 }}
               >

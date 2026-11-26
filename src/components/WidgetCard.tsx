@@ -6,7 +6,6 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import {
-  ArrowDownRight,
   ArrowUpRight,
   ChevronLeft,
   ChevronRight,
@@ -199,34 +198,101 @@ export function CarouselWidgetBody({
 export function NoteWidgetBody({
   widget,
   editMode,
+  isInlineEditing = false,
   onRequestEditNote,
+  onCommitInlineNote,
+  onCancelInlineEdit,
 }: {
   widget: NoteWidget;
   editMode: boolean;
+  isInlineEditing?: boolean;
   onRequestEditNote: (note: NoteWidget) => void;
+  onCommitInlineNote?: (note: NoteWidget, title: string, content: string) => void;
+  onCancelInlineEdit?: () => void;
 }) {
+  const [draftTitle, setDraftTitle] = useState(widget.title);
+  const [draftContent, setDraftContent] = useState(widget.content);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (isInlineEditing) {
+      setDraftTitle(widget.title);
+      setDraftContent(widget.content);
+      const raf = window.requestAnimationFrame(() => {
+        const el = textareaRef.current;
+        if (!el) return;
+        el.focus();
+        const len = el.value.length;
+        el.setSelectionRange(len, len);
+      });
+      return () => window.cancelAnimationFrame(raf);
+    }
+  }, [isInlineEditing, widget.title, widget.content]);
+
+  const commitNote = () => {
+    onCommitInlineNote?.(widget, draftTitle.trim() || '随手便签', draftContent);
+  };
+
   return (
     <div
       className="h-full w-full flex flex-col p-3.5"
+      onPointerDown={isInlineEditing ? (e) => e.stopPropagation() : undefined}
+      onBlur={
+        isInlineEditing
+          ? (e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                commitNote();
+              }
+            }
+          : undefined
+      }
       onDoubleClick={(e) => {
-        if (editMode) return;
+        if (editMode || isInlineEditing) return;
         e.stopPropagation();
         onRequestEditNote(widget);
       }}
     >
-      <div className={`flex items-center justify-between gap-2 pb-2 shrink-0 ${editMode ? 'pr-7' : ''}`}>
-        <div className="flex items-center gap-1.5 min-w-0">
+      <div
+        className={`flex items-center justify-between gap-2 pb-2 shrink-0 ${
+          editMode && !isInlineEditing ? 'pr-7' : ''
+        }`}
+      >
+        <div className="flex items-center gap-1.5 min-w-0 flex-1">
           {widget.isPrivate ? (
             <Lock size={12} className="text-amber-500 shrink-0" />
           ) : (
             <StickyNote size={13} className="text-[var(--accent-orange)] shrink-0" />
           )}
-          <span className="text-xs font-semibold truncate text-[var(--ink-main)]">
-            {widget.title || '便签'}
-          </span>
+          {isInlineEditing ? (
+            <input
+              type="text"
+              value={draftTitle}
+              onChange={(e) => setDraftTitle(e.target.value)}
+              onPointerDown={(e) => e.stopPropagation()}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  commitNote();
+                } else if (e.key === 'Enter') {
+                  e.preventDefault();
+                  textareaRef.current?.focus();
+                } else if (e.key === 'Escape') {
+                  e.preventDefault();
+                  onCancelInlineEdit?.();
+                }
+              }}
+              placeholder="便签标题"
+              className="w-full min-w-0 bg-transparent border-b border-[var(--border-strong)]/60 focus:border-[var(--accent-orange)] text-xs font-semibold text-[var(--ink-main)] outline-none pb-0.5"
+            />
+          ) : (
+            <span className="text-xs font-semibold truncate text-[var(--ink-main)]">
+              {widget.title || '便签'}
+            </span>
+          )}
         </div>
 
-        {!editMode && (
+        {!editMode && !isInlineEditing && (
           <button
             type="button"
             onClick={(e) => {
@@ -234,7 +300,7 @@ export function NoteWidgetBody({
               onRequestEditNote(widget);
             }}
             className="h-6 w-6 rounded-full inline-flex items-center justify-center text-[var(--ink-muted)] hover:text-[var(--ink-main)] hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer shrink-0"
-            title="编辑便签（需要解锁验证）"
+            title="编辑便签"
             aria-label="编辑便签"
           >
             <Pencil size={11} />
@@ -242,13 +308,34 @@ export function NoteWidgetBody({
         )}
       </div>
 
-      <div className="bento-scroll flex-1 min-h-0 overflow-y-auto text-xs leading-relaxed text-[var(--ink-secondary)] whitespace-pre-wrap break-words pr-0.5">
-        {widget.content ? (
-          widget.content
-        ) : (
-          <span className="text-[var(--ink-muted)] italic">双击或点击编辑图标记录备忘…</span>
-        )}
-      </div>
+      {isInlineEditing ? (
+        <textarea
+          ref={textareaRef}
+          value={draftContent}
+          onChange={(e) => setDraftContent(e.target.value)}
+          onPointerDown={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+              e.preventDefault();
+              commitNote();
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              onCancelInlineEdit?.();
+            }
+          }}
+          placeholder="记录备忘内容… (失焦或 Ctrl/Cmd+Enter 自动保存)"
+          className="bento-scroll flex-1 min-h-0 w-full resize-none bg-transparent text-xs leading-relaxed text-[var(--ink-secondary)] placeholder:text-[var(--ink-muted)]/75 outline-none pr-0.5 select-text"
+        />
+      ) : (
+        <div className="bento-scroll flex-1 min-h-0 overflow-y-auto text-xs leading-relaxed text-[var(--ink-secondary)] whitespace-pre-wrap break-words pr-0.5">
+          {widget.content ? (
+            widget.content
+          ) : (
+            <span className="text-[var(--ink-muted)] italic">双击或点击编辑图标记录备忘…</span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -259,10 +346,15 @@ interface FreeTextCardProps {
   editMode: boolean;
   isSelected: boolean;
   isResizing: boolean;
+  isNewlyCreated?: boolean;
+  isInlineEditing?: boolean;
   dragOffset?: { dxPx: number; dyPx: number } | null;
   onTextPointerDown: (e: ReactPointerEvent, widget: FreeTextWidget) => void;
   onTextResizePointerDown: (e: ReactPointerEvent, widget: FreeTextWidget) => void;
   onEditText: (widget: FreeTextWidget) => void;
+  onStartInlineEdit?: (widgetId: string) => void;
+  onCommitInlineText?: (widget: FreeTextWidget, nextText: string) => void;
+  onCancelInlineEdit?: () => void;
   onOpenContextMenu?: (e: ReactMouseEvent, target: ContextMenuTarget) => void;
 }
 
@@ -272,10 +364,15 @@ export function FreeTextCard({
   editMode,
   isSelected,
   isResizing,
+  isNewlyCreated = false,
+  isInlineEditing = false,
   dragOffset,
   onTextPointerDown,
   onTextResizePointerDown,
   onEditText,
+  onStartInlineEdit,
+  onCommitInlineText,
+  onCancelInlineEdit,
   onOpenContextMenu,
 }: FreeTextCardProps) {
   const step = grid.cellSize + grid.gap;
@@ -287,6 +384,29 @@ export function FreeTextCard({
 
   const prevDraggedRef = useRef(false);
   const [suppressDropTransition, setSuppressDropTransition] = useState(false);
+  const [draftText, setDraftText] = useState(widget.text);
+  const textAreaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (isInlineEditing) {
+      setDraftText(widget.text);
+      const raf = window.requestAnimationFrame(() => {
+        textAreaRef.current?.focus();
+        textAreaRef.current?.select();
+      });
+      return () => window.cancelAnimationFrame(raf);
+    }
+  }, [isInlineEditing, widget.text]);
+
+  const commitText = () => {
+    const trimmed = draftText.trim();
+    if (trimmed) {
+      onCommitInlineText?.(widget, trimmed);
+    } else {
+      setDraftText(widget.text);
+      onCancelInlineEdit?.();
+    }
+  };
 
   useEffect(() => {
     if (prevDraggedRef.current && !isActivelyDragged) {
@@ -308,12 +428,13 @@ export function FreeTextCard({
   return (
     <div
       data-text-id={widget.id}
-      onPointerDown={editMode ? (e) => onTextPointerDown(e, widget) : undefined}
+      onPointerDown={editMode && !isInlineEditing ? (e) => onTextPointerDown(e, widget) : undefined}
       onDoubleClick={
-        editMode
+        editMode && !isInlineEditing
           ? (e) => {
               e.stopPropagation();
-              onEditText(widget);
+              if (onStartInlineEdit) onStartInlineEdit(widget.id);
+              else onEditText(widget);
             }
           : undefined
       }
@@ -339,32 +460,64 @@ export function FreeTextCard({
           ? 'none'
           : 'left 160ms cubic-bezier(0.22, 1, 0.36, 1), top 160ms cubic-bezier(0.22, 1, 0.36, 1), width 120ms ease',
         willChange: isActivelyDragged ? 'transform' : undefined,
-        zIndex: isActivelyDragged ? 35 : 14,
+        zIndex: isActivelyDragged ? 35 : isInlineEditing ? 30 : 14,
       }}
       className={`group rounded-2xl px-2 py-1 select-none ${
+        isNewlyCreated ? 'newly-created-pulse' : ''
+      } ${
         editMode
-          ? `pointer-events-auto cursor-grab active:cursor-grabbing ${
-              isSelected || isResizing
+          ? `pointer-events-auto ${isInlineEditing ? 'cursor-text' : 'cursor-grab active:cursor-grabbing'} ${
+              isSelected || isResizing || isInlineEditing
                 ? 'border border-[var(--accent-orange)] bg-[var(--accent-orange)]/6'
                 : 'border border-dashed border-transparent hover:border-[var(--border-strong)] hover:bg-[var(--bg-card)]/35'
             }`
           : 'pointer-events-none'
       }`}
     >
-      <div
-        style={{
-          fontSize: widget.fontSize,
-          color: widget.color || 'var(--ink-main)',
-          fontWeight,
-          textAlign: widget.align,
-          lineHeight: 1.3,
-        }}
-        className="whitespace-pre-wrap break-words"
-      >
-        {widget.text || '自由文字'}
-      </div>
+      {editMode && isInlineEditing ? (
+        <textarea
+          ref={textAreaRef}
+          value={draftText}
+          onChange={(e) => setDraftText(e.target.value)}
+          onPointerDown={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+              e.preventDefault();
+              commitText();
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              setDraftText(widget.text);
+              onCancelInlineEdit?.();
+            }
+          }}
+          onBlur={commitText}
+          rows={Math.max(1, draftText.split('\n').length)}
+          style={{
+            fontSize: widget.fontSize,
+            color: widget.color || 'var(--ink-main)',
+            fontWeight,
+            textAlign: widget.align,
+            lineHeight: 1.3,
+          }}
+          className="w-full min-h-full resize-none bg-transparent outline-none select-text overflow-hidden"
+        />
+      ) : (
+        <div
+          style={{
+            fontSize: widget.fontSize,
+            color: widget.color || 'var(--ink-main)',
+            fontWeight,
+            textAlign: widget.align,
+            lineHeight: 1.3,
+          }}
+          className="whitespace-pre-wrap break-words"
+        >
+          {widget.text || '自由文字'}
+        </div>
+      )}
 
-      {editMode && (
+      {editMode && !isInlineEditing && (
         <>
           <button
             type="button"
@@ -374,7 +527,7 @@ export function FreeTextCard({
               onEditText(widget);
             }}
             className="opacity-0 group-hover:opacity-100 absolute -top-2.5 right-2 h-6 w-6 rounded-full bg-[var(--bg-elevated)] border border-[var(--border-hair)] flex items-center justify-center text-[var(--ink-secondary)] hover:text-[var(--ink-main)] shadow-xs cursor-pointer"
-            title="编辑文字样式"
+            title="编辑文字样式与详情"
           >
             <Pencil size={10} />
           </button>
@@ -384,14 +537,21 @@ export function FreeTextCard({
               e.stopPropagation();
               onTextResizePointerDown(e, widget);
             }}
-            className={`opacity-0 group-hover:opacity-100 absolute -bottom-2 -right-2 h-5 w-5 rounded-md flex items-center justify-center cursor-nwse-resize border ${
+            className={`opacity-0 group-hover:opacity-100 absolute -bottom-2 -right-2 h-5 w-5 rounded-md flex items-center justify-center cursor-nwse-resize border transition-colors ${
               isResizing
-                ? 'opacity-100 bg-[var(--accent-orange)] text-white border-transparent'
-                : 'bg-[var(--bg-card)] text-[var(--ink-secondary)] border-[var(--border-hair)] hover:bg-[var(--accent-orange)] hover:text-white'
+                ? '!opacity-100 bg-[var(--accent-orange)] text-white border-transparent'
+                : 'bg-[var(--bg-card)] text-[var(--ink-muted)] border-[var(--border-hair)] hover:bg-[var(--accent-orange)] hover:text-white shadow-sm'
             }`}
-            title="调整文本框宽度"
+            title="调整文本框范围"
           >
-            <ArrowDownRight size={10} />
+            <svg width="9" height="9" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+              <path
+                d="M8.5 2.5L2.5 8.5M8.5 6L6 8.5"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            </svg>
           </button>
         </>
       )}

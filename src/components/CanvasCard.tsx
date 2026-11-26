@@ -45,6 +45,8 @@ interface CanvasCardProps {
   isFolderDropTarget: boolean;
   isMergeTarget: boolean;
   isResizing: boolean;
+  isNewlyCreated?: boolean;
+  isInlineEditing?: boolean;
   dragOffset?: { dxPx: number; dyPx: number } | null;
   draggingChildId: string | null;
   onCardPointerDown: (e: ReactPointerEvent, entity: CanvasGridEntity) => void;
@@ -57,6 +59,9 @@ interface CanvasCardProps {
   onOpenFolder: (folder: FolderContainer) => void;
   onEditEntity: (entity: CanvasGridEntity) => void;
   onRequestEditNote?: (note: NoteWidget) => void;
+  onStartInlineNoteEdit?: (note: NoteWidget) => void;
+  onCommitInlineNote?: (note: NoteWidget, title: string, content: string) => void;
+  onCancelInlineEdit?: () => void;
   onCycleFolderMode?: (folder: FolderContainer) => void;
   onOpenContextMenu?: (e: ReactMouseEvent, target: ContextMenuTarget) => void;
 }
@@ -83,6 +88,8 @@ export const CanvasCard = memo(function CanvasCard({
   isFolderDropTarget,
   isMergeTarget,
   isResizing,
+  isNewlyCreated = false,
+  isInlineEditing = false,
   dragOffset,
   draggingChildId,
   onCardPointerDown,
@@ -91,6 +98,9 @@ export const CanvasCard = memo(function CanvasCard({
   onOpenFolder,
   onEditEntity,
   onRequestEditNote,
+  onStartInlineNoteEdit,
+  onCommitInlineNote,
+  onCancelInlineEdit,
   onCycleFolderMode,
   onOpenContextMenu,
 }: CanvasCardProps) {
@@ -139,6 +149,7 @@ export const CanvasCard = memo(function CanvasCard({
     isPushed ? 'bento-card-pushed' : '',
     isError ? 'bento-card-error' : '',
     isFolderDropTarget || isMergeTarget ? 'bento-card-drop-target' : '',
+    isNewlyCreated ? 'newly-created-pulse' : '',
   ]
     .filter(Boolean)
     .join(' ');
@@ -191,13 +202,23 @@ export const CanvasCard = memo(function CanvasCard({
         }
       }}
       onDoubleClick={(e) => {
-        if (!editMode) return;
+        if (!editMode || isInlineEditing) return;
         e.stopPropagation();
-        onEditEntity(entity);
+        if (entity.kind === 'note' && onStartInlineNoteEdit) {
+          onStartInlineNoteEdit(entity);
+        } else {
+          onEditEntity(entity);
+        }
       }}
       style={cardStyle}
       className={`${stateClass} overflow-hidden flex flex-col relative ${
-        editMode ? 'cursor-grab active:cursor-grabbing' : entity.kind === 'note' ? 'cursor-default' : 'cursor-pointer'
+        editMode
+          ? isInlineEditing
+            ? 'cursor-text'
+            : 'cursor-grab active:cursor-grabbing'
+          : entity.kind === 'note'
+            ? 'cursor-default'
+            : 'cursor-pointer'
       }`}
     >
       {entity.kind === 'item' ? (
@@ -225,7 +246,10 @@ export const CanvasCard = memo(function CanvasCard({
         <NoteWidgetBody
           widget={entity}
           editMode={editMode}
+          isInlineEditing={isInlineEditing}
           onRequestEditNote={(note) => onRequestEditNote?.(note)}
+          onCommitInlineNote={onCommitInlineNote}
+          onCancelInlineEdit={onCancelInlineEdit}
         />
       )}
 
@@ -248,7 +272,7 @@ export const CanvasCard = memo(function CanvasCard({
       )}
 
       {/* Edit Mode Controls (hover/selected reveal on desktop to keep canvas clean) */}
-      {editMode && (
+      {editMode && !isInlineEditing && (
         <>
           <button
             type="button"

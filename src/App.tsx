@@ -5,6 +5,7 @@ import type {
   CanvasGridEntity,
   CanvasResponse,
   CanvasWidget,
+  CarouselWidget,
   DefaultThemeMode,
   FolderContainer,
   FolderDisplayMode,
@@ -18,6 +19,7 @@ import { DEFAULT_SITE_SETTINGS } from '../shared/settings';
 import {
   applyEntityLayoutToDoc,
   clampGridSize,
+  clampZoneSize,
   findNearestFreeSlot,
   getTopLevelEntities,
   isEntityInsideZone,
@@ -43,7 +45,7 @@ import {
   resolveViewportOrigin,
 } from './utils/viewport';
 import { FolderModal } from './components/FolderModal';
-import { EditDock } from './components/EditDock';
+import { EditDock, type EditInspectorTarget } from './components/EditDock';
 import type { ItemEditorDraft, ItemEditorSavePayload } from './components/ItemEditorModal';
 import type {
   ZoneWidgetEditorDraft,
@@ -201,6 +203,9 @@ export default function App() {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [flyTransition, setFlyTransition] = useState(false);
   const flyTimerRef = useRef<number | null>(null);
+  const [newlyCreatedId, setNewlyCreatedId] = useState<string | null>(null);
+  const newlyCreatedTimerRef = useRef<number | null>(null);
+  const [inlineEditingId, setInlineEditingId] = useState<string | null>(null);
   const [toast, setToast] = useState<{ msg: string; tone: 'error' | 'info' } | null>(null);
 
   const showToast = useCallback((msg: string, tone: 'error' | 'info' = 'info') => {
@@ -704,6 +709,7 @@ export default function App() {
     if (editMode) {
       setEditMode(false);
       setMarqueeMode(false);
+      setInlineEditingId(null);
       setSelectedIds([]);
       return;
     }
@@ -815,7 +821,8 @@ export default function App() {
     }
 
     if (editorDraft.mode === 'create-folder') {
-      const slot = findNearestFreeSlot(topLevelEntities, payload.w, payload.h, 0, 0);
+      const anchor = editorDraft.initialPos ?? getViewportCenterGrid(payload.w, payload.h);
+      const slot = placeNearAnchor(payload.w, payload.h, anchor);
       const id = `folder-${crypto.randomUUID().slice(0, 8)}`;
       const newFolder: FolderContainer = {
         id,
@@ -832,7 +839,7 @@ export default function App() {
         updatedAt: now,
       };
       void commitDocState([...doc.folders, newFolder], doc.items);
-      setSelectedIds([id]);
+      revealAndHighlightEntity(newFolder, id);
       setEditorDraft(null);
       return null;
     }
@@ -862,8 +869,14 @@ export default function App() {
         createdAt: now,
         updatedAt: now,
       };
+      const parentFolder = doc.folders.find((f) => f.id === targetParentId);
+      if (parentFolder) {
+        revealAndHighlightEntity(parentFolder, parentFolder.id);
+        showToast(`已添加至「${parentFolder.title}」`);
+      }
     } else {
-      const slot = findNearestFreeSlot(topLevelEntities, payload.w, payload.h, 0, 0);
+      const anchor = editorDraft.initialPos ?? getViewportCenterGrid(payload.w, payload.h);
+      const slot = placeNearAnchor(payload.w, payload.h, anchor);
       newItem = {
         id,
         title: payload.title,
@@ -882,7 +895,7 @@ export default function App() {
         createdAt: now,
         updatedAt: now,
       };
-      setSelectedIds([id]);
+      revealAndHighlightEntity(newItem, id);
     }
 
     void commitDocState(doc.folders, [...doc.items, newItem]);
@@ -1175,14 +1188,215 @@ export default function App() {
     if (folder) showToast(`已删除「${folder.title}」及其内部项目`);
   }
 
-  function worldPosToGrid(worldX?: number, worldY?: number): { x: number; y: number } {
+  function getViewportCenterGrid(w = 1, h = 1): { x: number; y: number } {
+    const step = doc.grid.cellSize + doc.grid.gap;
+    const cx = (window.innerWidth / 2 - view.panX) / view.scale;
+    const cy = ((window.innerHeight - 56) / 2 - view.panY) / view.scale;
+    return {
+      x: snapQuarter(cx / step - w / 2),
+      y: snapQuarter(cy / step - h / 2),
+    };
+  }
+
+  function placeNearAnchor(w: number, h: number, anchor: { x: number; y: number }) {
+    const prefersDirect = !topLevelEntities.some((e) =>
+      rectsOverlap({ x: anchor.x, y: anchor.y, w, h }, e)
+    );
+    return prefersDirect
+      ? anchor
+      : findNearestFreeSlot(topLevelEntities, w, h, anchor.x, anchor.y);
+  }
+
+  const revealAndHighlightEntity = useCallback(
+    (rect: { x: number; y: number; w: number; h: number }, id: string) => {
+      const step = doc.grid.cellSize + doc.grid.gap;
+      const pxLeft = rect.x * step;
+      const pxTop = rect.y * step;
+      const pxW = rect.w * doc.grid.cellSize + Math.max(0, rect.w - 1) * doc.grid.gap;
+      const pxH = rect.h * doc.grid.cellSize + Math.max(0, rect.h - 1) * doc.grid.gap;
+
+      const screenLeft = pxLeft * view.scale + view.panX;
+      const screenTop = pxTop * view.scale + view.panY;
+      const screenRight = screenLeft + pxW * view.scale;
+      const screenBottom = screenTop + pxH * view.scale;
+
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const outOfBounds =
+        screenLeft < 36 ||
+        screenRight > vw - 36 ||
+        screenTop < 72 ||
+        screenBottom > vh - 116;
+
+      if (outOfBounds) {
+        const cx = pxLeft + pxW / 2;
+        const cy = pxTop + pxH / 2;
+        if (flyTimerRef.current !== null) {
+          window.clearTimeout(flyTimerRef.current);
+        }
+        setFlyTransition(true);
+        setView((prev) => ({
+          scale: prev.scale,
+          panX: Math.round(vw / 2 - cx * prev.scale),
+          panY: Math.round((vh - 56) / 2 - cy * prev.scale),
+        }));
+        flyTimerRef.current = window.setTimeout(() => {
+          flyTimerRef.current = null;
+          setFlyTransition(false);
+        }, 360);
+      }
+
+      setSelectedIds([id]);
+      if (newlyCreatedTimerRef.current !== null) {
+        window.clearTimeout(newlyCreatedTimerRef.current);
+      }
+      setNewlyCreatedId(id);
+      newlyCreatedTimerRef.current = window.setTimeout(() => {
+        newlyCreatedTimerRef.current = null;
+        setNewlyCreatedId((cur) => (cur === id ? null : cur));
+      }, 1600);
+    },
+    [doc.grid.cellSize, doc.grid.gap, view.panX, view.panY, view.scale]
+  );
+
+  function worldPosToGrid(worldX?: number, worldY?: number, w = 1, h = 1): { x: number; y: number } {
     const step = doc.grid.cellSize + doc.grid.gap;
     if (typeof worldX === 'number' && typeof worldY === 'number') {
       return { x: snapQuarter(worldX / step), y: snapQuarter(worldY / step) };
     }
-    const cx = (window.innerWidth / 2 - view.panX) / view.scale;
-    const cy = (window.innerHeight / 2 - view.panY) / view.scale;
-    return { x: snapQuarter(cx / step), y: snapQuarter(cy / step) };
+    return getViewportCenterGrid(w, h);
+  }
+
+  function handleCreateZoneQuick(worldX?: number, worldY?: number) {
+    if (!editMode) setEditMode(true);
+    const now = new Date().toISOString();
+    const anchor = worldPosToGrid(worldX, worldY, 4, 2);
+    const id = `zone-${crypto.randomUUID().slice(0, 8)}`;
+    const newZone: ZoneContainer = {
+      id,
+      title: '新分区',
+      x: anchor.x,
+      y: anchor.y,
+      w: 4,
+      h: 2,
+      isPrivate: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+    void commitDocState(doc.folders, doc.items, true, [...(doc.zones ?? []), newZone], doc.widgets ?? []);
+    revealAndHighlightEntity(newZone, id);
+    setInlineEditingId(id);
+  }
+
+  function handleCreateZoneFromSelection() {
+    if (!editMode) setEditMode(true);
+    const selSet = new Set(selectedIds);
+    const textList = (doc.widgets ?? []).filter((w): w is FreeTextWidget => w.kind === 'text');
+    const selectedBoxes = [
+      ...topLevelEntities.filter((e) => selSet.has(e.id)),
+      ...textList.filter((t) => selSet.has(t.id)),
+    ];
+    if (selectedBoxes.length === 0) {
+      handleCreateZoneQuick();
+      return;
+    }
+    const minX = Math.min(...selectedBoxes.map((b) => b.x));
+    const minY = Math.min(...selectedBoxes.map((b) => b.y));
+    const maxX = Math.max(...selectedBoxes.map((b) => b.x + b.w));
+    const maxY = Math.max(...selectedBoxes.map((b) => b.y + b.h));
+    const now = new Date().toISOString();
+    const id = `zone-${crypto.randomUUID().slice(0, 8)}`;
+    const newZone: ZoneContainer = {
+      id,
+      title: '新分区',
+      x: snapQuarter(minX),
+      y: snapQuarter(minY),
+      w: clampZoneSize(Math.ceil(maxX - minX)),
+      h: clampZoneSize(Math.ceil(maxY - minY)),
+      isPrivate: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+    void commitDocState(doc.folders, doc.items, true, [...(doc.zones ?? []), newZone], doc.widgets ?? []);
+    revealAndHighlightEntity(newZone, id);
+    setInlineEditingId(id);
+  }
+
+  function handleCreateNoteQuick(worldX?: number, worldY?: number) {
+    if (!editMode) setEditMode(true);
+    const now = new Date().toISOString();
+    const anchor = worldPosToGrid(worldX, worldY, 2, 2);
+    const slot = placeNearAnchor(2, 2, anchor);
+    const id = `note-${crypto.randomUUID().slice(0, 8)}`;
+    const newNote: NoteWidget = {
+      id,
+      kind: 'note',
+      title: '随手便签',
+      content: '',
+      tint: '#fef3c7',
+      isPrivate: false,
+      x: slot.x,
+      y: slot.y,
+      w: 2,
+      h: 2,
+      createdAt: now,
+      updatedAt: now,
+    };
+    void commitDocState(
+      doc.folders,
+      doc.items,
+      true,
+      doc.zones ?? [],
+      [...(doc.widgets ?? []), newNote]
+    );
+    revealAndHighlightEntity(newNote, id);
+    setInlineEditingId(id);
+  }
+
+  function handleCreateTextQuick(worldX?: number, worldY?: number) {
+    if (!editMode) setEditMode(true);
+    const now = new Date().toISOString();
+    const anchor = worldPosToGrid(worldX, worldY, 3, 1);
+    const id = `text-${crypto.randomUUID().slice(0, 8)}`;
+    const newText: FreeTextWidget = {
+      id,
+      kind: 'text',
+      text: '双击编辑文字',
+      fontSize: 24,
+      weight: 'bold',
+      align: 'left',
+      x: snapQuarter(anchor.x),
+      y: snapQuarter(anchor.y),
+      w: 3,
+      h: 1,
+      createdAt: now,
+      updatedAt: now,
+    };
+    void commitDocState(
+      doc.folders,
+      doc.items,
+      true,
+      doc.zones ?? [],
+      [...(doc.widgets ?? []), newText]
+    );
+    revealAndHighlightEntity(newText, id);
+    setInlineEditingId(id);
+  }
+
+  function openItemCreator(worldX?: number, worldY?: number) {
+    const initialPos =
+      typeof worldX === 'number' && typeof worldY === 'number'
+        ? worldPosToGrid(worldX, worldY)
+        : undefined;
+    setEditorDraft({ mode: 'create-item', defaultParentId: null, initialPos });
+  }
+
+  function openFolderCreator(worldX?: number, worldY?: number) {
+    const initialPos =
+      typeof worldX === 'number' && typeof worldY === 'number'
+        ? worldPosToGrid(worldX, worldY)
+        : undefined;
+    setEditorDraft({ mode: 'create-folder', initialPos });
   }
 
   function openZwCreator(
@@ -1190,14 +1404,23 @@ export default function App() {
     worldX?: number,
     worldY?: number
   ) {
+    if (kind === 'zone') {
+      handleCreateZoneQuick(worldX, worldY);
+      return;
+    }
+    if (kind === 'note') {
+      handleCreateNoteQuick(worldX, worldY);
+      return;
+    }
+    if (kind === 'text') {
+      handleCreateTextQuick(worldX, worldY);
+      return;
+    }
     const initialPos =
       typeof worldX === 'number' && typeof worldY === 'number'
         ? worldPosToGrid(worldX, worldY)
         : undefined;
-    if (kind === 'zone') setZwDraft({ mode: 'create-zone', initialPos });
-    else if (kind === 'carousel') setZwDraft({ mode: 'create-carousel', initialPos });
-    else if (kind === 'text') setZwDraft({ mode: 'create-text', initialPos });
-    else setZwDraft({ mode: 'create-note', initialPos });
+    setZwDraft({ mode: 'create-carousel', initialPos });
   }
 
   function openWidgetDraft(widget: CanvasWidget) {
@@ -1208,7 +1431,7 @@ export default function App() {
 
   function handleRequestEditNote(note: NoteWidget) {
     if (unlocked) {
-      setZwDraft({ mode: 'edit-note', widget: note });
+      setInlineEditingId(note.id);
       return;
     }
     setUnlockModal({
@@ -1217,6 +1440,104 @@ export default function App() {
       afterUnlock: 'none',
       widgetToEdit: note,
     });
+  }
+
+  function handleCommitInlineZoneTitle(zone: ZoneContainer, nextTitle: string) {
+    setInlineEditingId((cur) => (cur === zone.id ? null : cur));
+    if (nextTitle === zone.title) return;
+    const now = new Date().toISOString();
+    void commitDocState(
+      doc.folders,
+      doc.items,
+      true,
+      (doc.zones ?? []).map((z) =>
+        z.id === zone.id ? { ...z, title: nextTitle, updatedAt: now } : z
+      ),
+      doc.widgets ?? []
+    );
+  }
+
+  function handleCommitInlineNote(note: NoteWidget, title: string, content: string) {
+    setInlineEditingId((cur) => (cur === note.id ? null : cur));
+    if (title === note.title && content === note.content) return;
+    const now = new Date().toISOString();
+    void commitDocState(
+      doc.folders,
+      doc.items,
+      true,
+      doc.zones ?? [],
+      (doc.widgets ?? []).map((w) =>
+        w.id === note.id && w.kind === 'note' ? { ...w, title, content, updatedAt: now } : w
+      )
+    );
+  }
+
+  function handleCommitInlineText(widget: FreeTextWidget, nextText: string) {
+    setInlineEditingId((cur) => (cur === widget.id ? null : cur));
+    if (nextText === widget.text) return;
+    const now = new Date().toISOString();
+    void commitDocState(
+      doc.folders,
+      doc.items,
+      true,
+      doc.zones ?? [],
+      (doc.widgets ?? []).map((w) =>
+        w.id === widget.id && w.kind === 'text' ? { ...w, text: nextText, updatedAt: now } : w
+      )
+    );
+  }
+
+  function handleSetItemAccent(item: BookmarkItem, accent?: string) {
+    const now = new Date().toISOString();
+    void commitDocState(
+      doc.folders,
+      doc.items.map((it) => (it.id === item.id ? { ...it, accent, updatedAt: now } : it))
+    );
+  }
+
+  function handlePatchTextWidget(
+    widget: FreeTextWidget,
+    patch: Partial<Pick<FreeTextWidget, 'fontSize' | 'weight' | 'align' | 'color'>>
+  ) {
+    const now = new Date().toISOString();
+    void commitDocState(
+      doc.folders,
+      doc.items,
+      true,
+      doc.zones ?? [],
+      (doc.widgets ?? []).map((w) =>
+        w.id === widget.id && w.kind === 'text' ? { ...w, ...patch, updatedAt: now } : w
+      )
+    );
+  }
+
+  function handleSetNoteTint(widget: NoteWidget, tint?: string) {
+    const now = new Date().toISOString();
+    void commitDocState(
+      doc.folders,
+      doc.items,
+      true,
+      doc.zones ?? [],
+      (doc.widgets ?? []).map((w) =>
+        w.id === widget.id && w.kind === 'note' ? { ...w, tint, updatedAt: now } : w
+      )
+    );
+  }
+
+  function handlePatchCarouselWidget(
+    widget: CarouselWidget,
+    patch: Partial<Pick<CarouselWidget, 'transition' | 'fit'>>
+  ) {
+    const now = new Date().toISOString();
+    void commitDocState(
+      doc.folders,
+      doc.items,
+      true,
+      doc.zones ?? [],
+      (doc.widgets ?? []).map((w) =>
+        w.id === widget.id && w.kind === 'carousel' ? { ...w, ...patch, updatedAt: now } : w
+      )
+    );
   }
 
   function handleEditAnyEntity(entity: CanvasGridEntity) {
@@ -1343,13 +1664,13 @@ export default function App() {
       const base =
         zwDraft.mode === 'create-zone' && zwDraft.initialPos
           ? zwDraft.initialPos
-          : worldPosToGrid();
+          : getViewportCenterGrid(payload.w, payload.h);
       const id = `zone-${crypto.randomUUID().slice(0, 8)}`;
       const newZone: ZoneContainer = {
         id,
         title: payload.title,
-        x: snapQuarter(base.x - (zwDraft.mode === 'create-zone' && zwDraft.initialPos ? 0 : payload.w / 2)),
-        y: snapQuarter(base.y - (zwDraft.mode === 'create-zone' && zwDraft.initialPos ? 0 : payload.h / 2)),
+        x: snapQuarter(base.x),
+        y: snapQuarter(base.y),
         w: payload.w,
         h: payload.h,
         accent: payload.accent,
@@ -1358,7 +1679,7 @@ export default function App() {
         updatedAt: now,
       };
       void commitDocState(doc.folders, doc.items, true, [...curZones, newZone], curWidgets);
-      setSelectedIds([id]);
+      revealAndHighlightEntity(newZone, id);
       setZwDraft(null);
       return null;
     }
@@ -1387,7 +1708,7 @@ export default function App() {
       const base =
         zwDraft.mode === 'create-text' && zwDraft.initialPos
           ? zwDraft.initialPos
-          : worldPosToGrid();
+          : getViewportCenterGrid(payload.w, payload.h);
       const id = `text-${crypto.randomUUID().slice(0, 8)}`;
       const newText: FreeTextWidget = {
         id,
@@ -1405,7 +1726,7 @@ export default function App() {
         updatedAt: now,
       };
       void commitDocState(doc.folders, doc.items, true, curZones, [...curWidgets, newText]);
-      setSelectedIds([id]);
+      revealAndHighlightEntity(newText, id);
       setZwDraft(null);
       return null;
     }
@@ -1439,16 +1760,8 @@ export default function App() {
       const anchor =
         zwDraft.mode === 'create-carousel' && zwDraft.initialPos
           ? zwDraft.initialPos
-          : { x: 0, y: 0 };
-      const prefersDirect =
-        zwDraft.mode === 'create-carousel' &&
-        zwDraft.initialPos &&
-        !topLevelEntities.some((e) =>
-          rectsOverlap({ x: anchor.x, y: anchor.y, w: payload.w, h: payload.h }, e)
-        );
-      const slot = prefersDirect
-        ? anchor
-        : findNearestFreeSlot(topLevelEntities, payload.w, payload.h, anchor.x, anchor.y);
+          : getViewportCenterGrid(payload.w, payload.h);
+      const slot = placeNearAnchor(payload.w, payload.h, anchor);
       const id = `carousel-${crypto.randomUUID().slice(0, 8)}`;
       const newCarousel: CanvasWidget = {
         id,
@@ -1466,7 +1779,7 @@ export default function App() {
         updatedAt: now,
       };
       void commitDocState(doc.folders, doc.items, true, curZones, [...curWidgets, newCarousel]);
-      setSelectedIds([id]);
+      revealAndHighlightEntity(newCarousel, id);
       setZwDraft(null);
       return null;
     }
@@ -1500,16 +1813,8 @@ export default function App() {
     const anchor =
       zwDraft.mode === 'create-note' && zwDraft.initialPos
         ? zwDraft.initialPos
-        : { x: 0, y: 0 };
-    const prefersDirect =
-      zwDraft.mode === 'create-note' &&
-      zwDraft.initialPos &&
-      !topLevelEntities.some((e) =>
-        rectsOverlap({ x: anchor.x, y: anchor.y, w: payload.w, h: payload.h }, e)
-      );
-    const slot = prefersDirect
-      ? anchor
-      : findNearestFreeSlot(topLevelEntities, payload.w, payload.h, anchor.x, anchor.y);
+        : getViewportCenterGrid(payload.w, payload.h);
+    const slot = placeNearAnchor(payload.w, payload.h, anchor);
     const id = `note-${crypto.randomUUID().slice(0, 8)}`;
     const newNote: NoteWidget = {
       id,
@@ -1526,7 +1831,7 @@ export default function App() {
       updatedAt: now,
     };
     void commitDocState(doc.folders, doc.items, true, curZones, [...curWidgets, newNote]);
-    setSelectedIds([id]);
+    revealAndHighlightEntity(newNote, id);
     setZwDraft(null);
     return null;
   }
@@ -1563,6 +1868,34 @@ export default function App() {
   const selectedItemCount = doc.items.filter(
     (i) => i.parentId === null && selectedSet.has(i.id)
   ).length;
+  const canWrapInZone = useMemo(() => {
+    const textIds = new Set(
+      (doc.widgets ?? []).filter((w) => w.kind === 'text').map((w) => w.id)
+    );
+    return (
+      topLevelEntities.some((e) => selectedSet.has(e.id)) ||
+      selectedIds.some((id) => textIds.has(id))
+    );
+  }, [doc.widgets, topLevelEntities, selectedIds, selectedSet]);
+
+  const editInspectorTarget: EditInspectorTarget | null = useMemo(() => {
+    if (selectedIds.length !== 1) return null;
+    const selId = selectedIds[0];
+    const ent = topLevelEntities.find((e) => e.id === selId);
+    if (ent) {
+      if (ent.kind === 'folder') return { kind: 'folder', folder: ent };
+      if (ent.kind === 'item') return { kind: 'item', item: ent };
+      if (ent.kind === 'note') return { kind: 'note', widget: ent };
+      return { kind: 'carousel', widget: ent };
+    }
+    const zone = (doc.zones ?? []).find((z) => z.id === selId);
+    if (zone) return { kind: 'zone', zone };
+    const textW = (doc.widgets ?? []).find(
+      (w): w is FreeTextWidget => w.kind === 'text' && w.id === selId
+    );
+    if (textW) return { kind: 'text', widget: textW };
+    return null;
+  }, [selectedIds, topLevelEntities, doc.zones, doc.widgets]);
 
   return (
     <div className="relative w-full h-full overflow-hidden">
@@ -1673,6 +2006,14 @@ export default function App() {
                     setContextMenu({ x: e.clientX, y: e.clientY, target })
                   }
                   flyTransition={flyTransition}
+                  newlyCreatedId={newlyCreatedId}
+                  inlineEditingId={inlineEditingId}
+                  onStartInlineEdit={(id) => setInlineEditingId(id)}
+                  onCommitInlineZoneTitle={handleCommitInlineZoneTitle}
+                  onStartInlineNoteEdit={(note) => setInlineEditingId(note.id)}
+                  onCommitInlineNote={handleCommitInlineNote}
+                  onCommitInlineText={handleCommitInlineText}
+                  onCancelInlineEdit={() => setInlineEditingId(null)}
                   onStatusToast={showToast}
                 />
               )}
@@ -1702,21 +2043,24 @@ export default function App() {
                 <EditDock
                   selectedCount={selectedIds.length}
                   selectedItemCount={selectedItemCount}
+                  selectedTarget={editInspectorTarget}
+                  canWrapInZone={canWrapInZone}
                   folders={doc.folders}
-                  marqueeMode={marqueeMode}
                   showAnchorButton={
                     settings.desktopViewportMode === 'anchor' ||
                     settings.mobileViewportMode === 'anchor'
                   }
                   canUndo={undoStack.length > 0}
                   canRedo={redoStack.length > 0}
-                  onCreateItem={() => setEditorDraft({ mode: 'create-item', defaultParentId: null })}
-                  onCreateFolder={() => setEditorDraft({ mode: 'create-folder' })}
-                  onCreateZone={() => openZwCreator('zone')}
+                  onCreateItem={() => openItemCreator()}
+                  onCreateFolder={() => openFolderCreator()}
+                  onCreateZone={() =>
+                    canWrapInZone ? handleCreateZoneFromSelection() : handleCreateZoneQuick()
+                  }
                   onCreateCarousel={() => openZwCreator('carousel')}
-                  onCreateText={() => openZwCreator('text')}
-                  onCreateNote={() => openZwCreator('note')}
-                  onToggleMarquee={() => setMarqueeMode((v) => !v)}
+                  onCreateText={() => handleCreateTextQuick()}
+                  onCreateNote={() => handleCreateNoteQuick()}
+                  onCreateZoneFromSelection={handleCreateZoneFromSelection}
                   onSetViewportOrigin={() => void handleSetViewportOrigin()}
                   onEditSelected={() => {
                     if (selectedIds.length !== 1) return;
@@ -1743,6 +2087,20 @@ export default function App() {
                       .map((i) => i.id);
                     handleMoveItemsToFolder(itemIds, folderId);
                   }}
+                  onStartInlineEdit={(id) => setInlineEditingId(id)}
+                  onSetFolderAccent={handleSetFolderAccent}
+                  onCycleFolderMode={handleCycleFolderMode}
+                  onToggleFolderPrivate={handleToggleFolderPrivate}
+                  onAddItemToFolder={(folderId) =>
+                    setEditorDraft({ mode: 'create-item', defaultParentId: folderId })
+                  }
+                  onSetItemAccent={handleSetItemAccent}
+                  onSetZoneAccent={handleSetZoneAccent}
+                  onToggleZonePrivate={handleToggleZonePrivate}
+                  onPatchTextWidget={handlePatchTextWidget}
+                  onSetNoteTint={handleSetNoteTint}
+                  onToggleNotePrivate={handleToggleNotePrivate}
+                  onPatchCarouselWidget={handlePatchCarouselWidget}
                   onUndo={handleUndo}
                   onRedo={handleRedo}
                 />
@@ -1854,8 +2212,8 @@ export default function App() {
                   )
                 }
                 onCopyUrl={handleCopyUrl}
-                onCreateItem={() => setEditorDraft({ mode: 'create-item', defaultParentId: null })}
-                onCreateFolder={() => setEditorDraft({ mode: 'create-folder' })}
+                onCreateItem={(wx, wy) => openItemCreator(wx, wy)}
+                onCreateFolder={(wx, wy) => openFolderCreator(wx, wy)}
                 onCreateZone={(wx, wy) => openZwCreator('zone', wx, wy)}
                 onCreateCarousel={(wx, wy) => openZwCreator('carousel', wx, wy)}
                 onCreateText={(wx, wy) => openZwCreator('text', wx, wy)}
@@ -1893,7 +2251,12 @@ export default function App() {
                     const refreshed = (latestDoc?.widgets ?? []).find(
                       (w) => w.id === widgetPending.id
                     );
-                    openWidgetDraft(refreshed ?? widgetPending);
+                    const targetWidget = refreshed ?? widgetPending;
+                    if (targetWidget.kind === 'note') {
+                      setInlineEditingId(targetWidget.id);
+                    } else {
+                      openWidgetDraft(targetWidget);
+                    }
                   } else {
                     showToast('已解锁，私密内容已显现');
                   }

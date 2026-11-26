@@ -10,9 +10,9 @@ import { fetchUrlMeta } from '../api';
 import { ICON_PRESET_NAMES, IconGlyph } from './IconGlyph';
 
 export type ItemEditorDraft =
-  | { mode: 'create-item'; defaultParentId?: string | null }
+  | { mode: 'create-item'; defaultParentId?: string | null; initialPos?: { x: number; y: number } }
   | { mode: 'edit-item'; item: BookmarkItem }
-  | { mode: 'create-folder' }
+  | { mode: 'create-folder'; initialPos?: { x: number; y: number } }
   | { mode: 'edit-folder'; folder: FolderContainer };
 
 export interface ItemEditorSavePayload {

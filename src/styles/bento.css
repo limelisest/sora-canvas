@@ -235,3 +235,19 @@ html.dark .bento-note-tinted {
   animation: bento-marquee var(--marquee-duration, 3s) ease-in-out infinite;
   will-change: transform;
 }
+
+@keyframes newly-created-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgba(255, 85, 0, 0.55), 0 0 0 0 rgba(255, 145, 77, 0.35);
+  }
+  45% {
+    box-shadow: 0 0 0 8px rgba(255, 85, 0, 0.24), 0 0 24px 6px rgba(255, 110, 30, 0.32);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(255, 85, 0, 0), 0 0 0 0 rgba(255, 145, 77, 0);
+  }
+}
+
+.newly-created-pulse {
+  animation: newly-created-ring 800ms cubic-bezier(0.22, 1, 0.36, 1) 2;
+}
