@@ -135,7 +135,7 @@ interface ZoneOverlayProps {
 
 /**
  * Top overlay layer of a ZoneContainer (zIndex 28 / 36 while dragging).
- * Hosts the bottom-right floating title pill and edit-mode border hit-strips / resize handle.
+ * Hosts the top-centered floating title pill and edit-mode border hit-strips / resize handle.
  */
 export function ZoneOverlay({
   zone,
@@ -180,7 +180,7 @@ export function ZoneOverlay({
       }}
       className="pointer-events-none select-none"
     >
-      {/* Bottom-right floating title pill centered on the bottom border */}
+      {/* Top-centered floating title pill anchored across the top border, shifted inward */}
       <div
         onPointerDown={
           editMode
@@ -201,10 +201,10 @@ export function ZoneOverlay({
         style={{
           borderColor: `color-mix(in srgb, ${box.accent} 28%, var(--border-hair))`,
         }}
-        className={`absolute bottom-0 translate-y-1/2 inline-flex items-center gap-1.5 rounded-full px-3.5 py-1 text-[13px] leading-tight font-semibold bg-[var(--bg-card)]/96 backdrop-blur-md border shadow-sm transition-[right] duration-150 ${
+        className={`absolute -top-1.5 left-1/2 -translate-x-1/2 z-20 max-w-[calc(100%-32px)] inline-flex items-center gap-1.5 rounded-full px-3.5 py-1 text-[13px] leading-tight font-semibold bg-[var(--bg-card)]/96 backdrop-blur-md border shadow-sm ${
           editMode
-            ? 'right-8 max-w-[calc(100%-52px)] pointer-events-auto cursor-grab active:cursor-grabbing'
-            : 'right-2 max-w-[calc(100%-24px)] pointer-events-none'
+            ? 'pointer-events-auto cursor-grab active:cursor-grabbing'
+            : 'pointer-events-none'
         }`}
         title={
           editMode
@@ -249,7 +249,7 @@ export function ZoneOverlay({
           <div
             onPointerDown={(e) => onZonePointerDown(e, zone)}
             onContextMenu={handleZoneContextMenu}
-            className="pointer-events-auto absolute bottom-0 left-3 right-9 h-2 cursor-grab active:cursor-grabbing"
+            className="pointer-events-auto absolute bottom-0 left-3 right-7 h-2 cursor-grab active:cursor-grabbing"
           />
           <div
             onPointerDown={(e) => onZonePointerDown(e, zone)}
@@ -259,7 +259,7 @@ export function ZoneOverlay({
           <div
             onPointerDown={(e) => onZonePointerDown(e, zone)}
             onContextMenu={handleZoneContextMenu}
-            className="pointer-events-auto absolute top-3 bottom-8 right-0 w-2 cursor-grab active:cursor-grabbing"
+            className="pointer-events-auto absolute top-3 bottom-7 right-0 w-2 cursor-grab active:cursor-grabbing"
           />
 
           <button
@@ -270,7 +270,7 @@ export function ZoneOverlay({
               onZoneResizePointerDown(e, zone);
             }}
             onClick={(e) => e.stopPropagation()}
-            className={`pointer-events-auto absolute bottom-0 right-1.5 translate-y-1/2 z-20 h-5.5 w-5.5 rounded-md flex items-center justify-center cursor-nwse-resize transition-colors ${
+            className={`pointer-events-auto absolute bottom-1 right-1 z-20 h-5 w-5 rounded-md flex items-center justify-center cursor-nwse-resize transition-colors ${
               isResizing
                 ? 'bg-[var(--accent-orange)] text-white'
                 : 'bg-[var(--bg-card)]/96 text-[var(--ink-muted)] hover:bg-[var(--accent-orange)] hover:text-white border border-[var(--border-hair)] shadow-sm'
