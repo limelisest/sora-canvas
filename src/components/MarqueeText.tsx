@@ -59,7 +59,7 @@ export function MarqueeText({ text, className = '' }: MarqueeTextProps) {
       <span
         ref={innerRef}
         style={style}
-        className={active ? 'inline-block marquee-active' : 'block truncate'}
+        className={active ? 'inline-block align-top marquee-active' : 'block truncate'}
       >
         {text}
       </span>

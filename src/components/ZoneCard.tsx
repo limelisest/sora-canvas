@@ -213,11 +213,11 @@ export function ZoneOverlay({
       >
         <div className="flex items-center gap-1.5 min-w-0">
           <span
-            className="h-2 w-2 rounded-full shrink-0"
+            className="h-2 w-2 rounded-full shrink-0 translate-y-[0.5px]"
             style={{ backgroundColor: zone.isPrivate ? '#ff5500' : box.accent }}
           />
           {zone.isPrivate && <Lock size={11} className="text-amber-500 shrink-0" />}
-          <span className="text-[12.5px] font-bold tracking-wide text-[var(--ink-main)] truncate">
+          <span className="text-[12.5px] leading-[18px] font-bold tracking-wide text-[var(--ink-main)] truncate">
             {zone.title}
           </span>
         </div>

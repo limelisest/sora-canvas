@@ -458,11 +458,11 @@ function FolderCardBody({
       <div className="flex items-center gap-2 min-w-0 flex-1">
         {(folder.accent || folder.isPrivate) && (
           <span
-            className="w-1 h-3.5 rounded-full shrink-0"
+            className="w-1 h-[13px] rounded-full shrink-0 translate-y-[0.5px]"
             style={{ backgroundColor: accentColor }}
           />
         )}
-        <MarqueeText text={folder.title} className="text-[13px] font-semibold tracking-tight" />
+        <MarqueeText text={folder.title} className="text-[13px] leading-[18px] font-semibold tracking-tight" />
       </div>
 
       {editMode && onCycleFolderMode && (
