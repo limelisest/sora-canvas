@@ -444,11 +444,14 @@ function FolderCardBody({
   onOpenContextMenu?: (e: ReactMouseEvent, target: ContextMenuTarget) => void;
 }) {
   const accentColor = folder.accent || (folder.isPrivate ? '#f59e0b' : 'var(--accent-orange)');
+  const isCompactFolder = folder.w === 1 && folder.h === 1;
 
   const header = (
     <div
       data-marquee-host
-      className={`group/hdr flex items-center justify-between gap-2 px-3 pt-2.5 pb-1.5 shrink-0 transition-colors ${
+      className={`group/hdr flex items-center justify-between gap-2 ${
+        isCompactFolder ? 'px-3' : 'pl-[22px] pr-3'
+      } pt-2.5 pb-1.5 shrink-0 transition-colors ${
         editMode ? '' : 'hover:bg-[var(--bg-subtle)]/55'
       }`}
     >
@@ -520,7 +523,7 @@ function FolderCardBody({
                     e.stopPropagation();
                     if (editMode) e.preventDefault();
                   }}
-                  className={`flex items-center gap-2 px-2 py-1 rounded-xl hover:bg-[var(--bg-subtle)] transition-colors min-w-0 ${
+                  className={`flex items-center gap-2 px-2.5 py-1 rounded-xl hover:bg-[var(--bg-subtle)] transition-colors min-w-0 ${
                     isGhost ? 'opacity-30 border border-dashed border-[var(--accent-orange)]' : ''
                   } ${editMode ? 'cursor-grab' : ''}`}
                 >
@@ -553,7 +556,6 @@ function FolderCardBody({
   const visibleChildren =
     hasOverflow && capacity > 1 ? items.slice(0, capacity - 1) : items.slice(0, capacity);
   const overflowCount = items.length - visibleChildren.length;
-  const isCompactFolder = folder.w === 1 && folder.h === 1;
 
   return (
     <div className="h-full w-full flex flex-col">

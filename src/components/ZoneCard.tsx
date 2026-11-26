@@ -200,7 +200,7 @@ export function ZoneOverlay({
             : undefined
         }
         onContextMenu={editMode ? handleZoneContextMenu : undefined}
-        className={`absolute top-0 left-0 right-0 h-[28px] px-3 flex items-center justify-between gap-2 z-20 ${
+        className={`absolute top-0 left-0 right-0 h-[28px] pl-[25px] pr-3.5 flex items-center justify-between gap-2 z-20 ${
           editMode
             ? 'pointer-events-auto cursor-grab active:cursor-grabbing rounded-t-[28px]'
             : 'pointer-events-none'
