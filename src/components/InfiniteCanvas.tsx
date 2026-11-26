@@ -32,6 +32,7 @@ import {
   solveResize,
 } from '../../shared/gridEngine';
 import { MAX_VIEW_SCALE, MIN_VIEW_SCALE } from '../utils/viewport';
+import { useStagedWallpaper } from '../utils/loadTracker';
 import { CanvasCard, type ContextMenuTarget } from './CanvasCard';
 import { IconGlyph } from './IconGlyph';
 import { FreeTextCard } from './WidgetCard';
@@ -2281,6 +2282,7 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
       (settings.dotGridMode === 'edit-only' && editMode);
     const useWallpaper =
       settings.canvasBgStyle === 'wallpaper' && Boolean(settings.customBgUrl);
+    const wallpaperReady = useStagedWallpaper(useWallpaper, settings.customBgUrl);
     const useAurora = settings.canvasBgStyle === 'aurora' && !useWallpaper;
 
     return (
@@ -2308,7 +2310,7 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
         }}
         style={{
           touchAction: 'none',
-          ...(useWallpaper
+          ...(wallpaperReady
             ? {
                 backgroundImage: `url(${settings.customBgUrl})`,
                 backgroundSize: 'cover',

@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import type { BookmarkItem, FolderContainer, SiteSettings } from '../../shared/types';
 import { fuzzyScore } from '../../shared/pinyin';
+import { useStagedWallpaper } from '../utils/loadTracker';
 import { IconGlyph } from './IconGlyph';
 
 type MobileLayoutMode = 'grid' | 'list';
@@ -410,6 +411,7 @@ export function MobileNavView({
   };
 
   const useWallpaper = settings.canvasBgStyle === 'wallpaper' && Boolean(settings.customBgUrl);
+  const wallpaperReady = useStagedWallpaper(useWallpaper, settings.customBgUrl);
   const useAurora = settings.canvasBgStyle === 'aurora' && !useWallpaper;
 
   const renderBookmarkCard = (
@@ -539,7 +541,7 @@ export function MobileNavView({
         useAurora ? 'canvas-bg-aurora' : 'bg-[var(--bg-canvas)]'
       }`}
     >
-      {useWallpaper && (
+      {wallpaperReady && (
         <>
           <div
             aria-hidden="true"

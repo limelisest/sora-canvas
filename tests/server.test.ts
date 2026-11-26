@@ -4,8 +4,9 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
+import sharp from 'sharp';
 import { buildApp } from '../server/app.js';
-import { normalizeDocument } from '../server/store.js';
+import { normalizeDocument, pruneOrphanedUploads } from '../server/store.js';
 import { normalizeSiteSettings } from '../shared/settings.js';
 
 let tmpDir: string;
@@ -833,13 +834,45 @@ test('v4 quarter-grid, private zones isolation, image uploads, and carousel/text
     });
     assert.equal(uploadRes.statusCode, 200);
     const uploadedUrl = uploadRes.json().url as string;
-    assert.match(uploadedUrl, /^\/api\/uploads\/[a-f0-9]{24}\.png$/);
+    assert.match(uploadedUrl, /^\/api\/uploads\/[a-f0-9]{24}\.webp$/);
 
     const getImgRes = await isolatedApp.inject({ method: 'GET', url: uploadedUrl });
     assert.equal(getImgRes.statusCode, 200);
-    assert.equal(getImgRes.headers['content-type'], 'image/png');
+    assert.equal(getImgRes.headers['content-type'], 'image/webp');
     assert.equal(getImgRes.headers['cache-control'], 'public, max-age=31536000, immutable');
-    assert.deepEqual(getImgRes.rawPayload, pngBytes);
+    assert.equal(getImgRes.rawPayload.subarray(0, 4).toString('ascii'), 'RIFF');
+
+    // Large 2400x1600 PNG is automatically downscaled <= 1600px wide and transcoded to smaller WebP
+    const rawPixels = Buffer.alloc(2400 * 1600 * 3);
+    for (let i = 0; i < rawPixels.length; i += 3) {
+      rawPixels[i] = (i * 13) & 0xff;
+      rawPixels[i + 1] = ((i >> 2) * 29) & 0xff;
+      rawPixels[i + 2] = ((i >> 5) * 47) & 0xff;
+    }
+    const largePng = await sharp(rawPixels, {
+      raw: { width: 2400, height: 1600, channels: 3 },
+    })
+      .png()
+      .toBuffer();
+
+    const largeUploadRes = await isolatedApp.inject({
+      method: 'POST',
+      url: '/api/uploads/image',
+      headers: authHeaders,
+      payload: { dataUrl: `data:image/png;base64,${largePng.toString('base64')}` },
+    });
+    assert.equal(largeUploadRes.statusCode, 200);
+    const largeUrl = largeUploadRes.json().url as string;
+    assert.match(largeUrl, /^\/api\/uploads\/[a-f0-9]{24}\.webp$/);
+
+    const largeFetched = await isolatedApp.inject({ method: 'GET', url: largeUrl });
+    assert.equal(largeFetched.statusCode, 200);
+    assert.equal(largeFetched.headers['content-type'], 'image/webp');
+    assert.ok(largeFetched.rawPayload.length < largePng.length);
+    const webpMeta = await sharp(largeFetched.rawPayload).metadata();
+    assert.equal(webpMeta.format, 'webp');
+    assert.ok((webpMeta.width ?? 0) <= 1600);
+    assert.ok((webpMeta.height ?? 0) <= 1600);
 
     // Reject path traversal / invalid filenames
     const badFileRes = await isolatedApp.inject({
@@ -1167,6 +1200,101 @@ test('v4 quarter-grid, private zones isolation, image uploads, and carousel/text
       },
     });
     assert.equal(decimalZonePut.statusCode, 409);
+
+    // 7. Orphaned uploads GC keeps canvas + settings + history refs and prunes unreferenced uploads
+    const makePng = (r: number, g: number, b: number) =>
+      sharp({ create: { width: 2, height: 2, channels: 3, background: { r, g, b } } })
+        .png()
+        .toBuffer();
+
+    const [bgBuf, orphanBuf, histOnlyBuf] = await Promise.all([
+      makePng(10, 20, 30),
+      makePng(110, 120, 130),
+      makePng(210, 220, 230),
+    ]);
+    const uploadBuf = async (buf: Buffer) => {
+      const res = await isolatedApp.inject({
+        method: 'POST',
+        url: '/api/uploads/image',
+        headers: authHeaders,
+        payload: { dataUrl: `data:image/png;base64,${buf.toString('base64')}` },
+      });
+      assert.equal(res.statusCode, 200);
+      return res.json().url as string;
+    };
+
+    const settingsBgUrl = await uploadBuf(bgBuf);
+    const orphanUrl = await uploadBuf(orphanBuf);
+    const histOnlyUrl = await uploadBuf(histOnlyBuf);
+
+    // Reference settingsBgUrl in settings.json and histOnlyUrl only in a saved history snapshot
+    const bgSettingsRes = await isolatedApp.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      headers: authHeaders,
+      payload: { canvasBgStyle: 'wallpaper', customBgUrl: `https://example.com${settingsBgUrl}` },
+    });
+    assert.equal(bgSettingsRes.statusCode, 200);
+
+    const histCanvasRes = await isolatedApp.inject({
+      method: 'PUT',
+      url: '/api/canvas',
+      headers: authHeaders,
+      payload: {
+        folders: [],
+        items: [],
+        zones: [],
+        widgets: [
+          {
+            id: 'w-hist-carousel',
+            kind: 'carousel',
+            images: [{ id: 'hi-1', url: histOnlyUrl }],
+            intervalSec: 3,
+            transition: 'slide',
+            fit: 'cover',
+            x: 0,
+            y: 0,
+            w: 2,
+            h: 2,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+      },
+    });
+    assert.equal(histCanvasRes.statusCode, 200);
+
+    // Snapshot into history and overwrite canvas without histOnlyUrl (keeping uploadedUrl)
+    const snapRes = await isolatedApp.inject({
+      method: 'POST',
+      url: '/api/history',
+      headers: authHeaders,
+      payload: { label: 'keep-hist-img' },
+    });
+    assert.equal(snapRes.statusCode, 200);
+    const restoreV4Res = await isolatedApp.inject({
+      method: 'PUT',
+      url: '/api/canvas',
+      headers: authHeaders,
+      payload: v4Payload,
+    });
+    assert.equal(restoreV4Res.statusCode, 200);
+
+    const gcRes = await pruneOrphanedUploads(isolatedDir, 0);
+    const orphanName = orphanUrl.split('/').pop()!;
+    const canvasRefName = uploadedUrl.split('/').pop()!;
+    const bgRefName = settingsBgUrl.split('/').pop()!;
+    const histRefName = histOnlyUrl.split('/').pop()!;
+
+    assert.ok(gcRes.removed.includes(orphanName));
+    assert.ok(!gcRes.removed.includes(canvasRefName));
+    assert.ok(!gcRes.removed.includes(bgRefName));
+    assert.ok(!gcRes.removed.includes(histRefName));
+
+    assert.equal((await isolatedApp.inject({ method: 'GET', url: orphanUrl })).statusCode, 404);
+    assert.equal((await isolatedApp.inject({ method: 'GET', url: uploadedUrl })).statusCode, 200);
+    assert.equal((await isolatedApp.inject({ method: 'GET', url: settingsBgUrl })).statusCode, 200);
+    assert.equal((await isolatedApp.inject({ method: 'GET', url: histOnlyUrl })).statusCode, 200);
   } finally {
     await isolatedApp.close();
     await fs.rm(isolatedDir, { recursive: true, force: true });

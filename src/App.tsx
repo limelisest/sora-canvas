@@ -54,6 +54,8 @@ import type {
 import type { ContextMenuState } from './components/ContextMenu';
 import { FolderNavBar } from './components/FolderNavBar';
 import { MobileNavView } from './components/MobileNavView';
+import { TopLoadBar } from './components/TopLoadBar';
+import { startLoadCycle } from './utils/loadTracker';
 
 const SettingsView = lazy(() =>
   import('./components/SettingsView').then((m) => ({ default: m.SettingsView }))
@@ -220,6 +222,10 @@ export default function App() {
   }, [dark]);
 
   useEffect(() => {
+    startLoadCycle();
+  }, []);
+
+  useEffect(() => {
     const onResize = () => {
       setIsMobile(isMobileViewport());
     };
@@ -242,6 +248,7 @@ export default function App() {
 
   const refreshCanvas = useCallback(
     async (recenter = false) => {
+      startLoadCycle();
       try {
         const res = await fetchCanvas();
         const nextDoc: CanvasDocument = {
@@ -1899,6 +1906,7 @@ export default function App() {
 
   return (
     <div className="relative w-full h-full overflow-hidden">
+      <TopLoadBar />
       {settingsOpen && unlocked ? (
         <Suspense
           fallback={

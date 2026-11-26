@@ -20,6 +20,11 @@ import type {
   GridConfig,
   NoteWidget,
 } from '../../shared/types';
+import {
+  markTrackedAssetSettled,
+  registerTrackedAsset,
+  useLoadPhase,
+} from '../utils/loadTracker';
 import type { ContextMenuTarget } from './CanvasCard';
 
 export function CarouselWidgetBody({
@@ -34,8 +39,11 @@ export function CarouselWidgetBody({
   onEditWidget: (widget: CarouselWidget) => void;
 }) {
   const images = widget.images;
+  const loadPhase = useLoadPhase();
+  const mediaReady = loadPhase === 'media';
   const [activeIndex, setActiveIndex] = useState(0);
   const [paused, setPaused] = useState(false);
+  const [loadedUrls, setLoadedUrls] = useState<Record<string, true>>({});
 
   useEffect(() => {
     if (activeIndex >= images.length) {
@@ -44,13 +52,47 @@ export function CarouselWidgetBody({
   }, [images.length, activeIndex]);
 
   useEffect(() => {
-    if (images.length <= 1 || paused || editMode) return;
+    if (!mediaReady || images.length <= 1 || paused || editMode) return;
     const ms = Math.max(1000, Math.min(30000, Math.round((widget.intervalSec || 3) * 1000)));
     const id = window.setInterval(() => {
       setActiveIndex((cur) => (cur + 1) % images.length);
     }, ms);
     return () => window.clearInterval(id);
-  }, [images.length, paused, editMode, widget.intervalSec]);
+  }, [mediaReady, images.length, paused, editMode, widget.intervalSec]);
+
+  const safeIdx = images.length > 0 ? activeIndex % images.length : 0;
+  const curr = images[safeIdx];
+  const currUrl = curr?.url ?? '';
+  const isCurrLoaded = Boolean(currUrl && loadedUrls[currUrl]);
+
+  // Register active slide in loadTracker once media phase begins
+  useEffect(() => {
+    if (!mediaReady || !currUrl) return;
+    registerTrackedAsset(`carousel:${widget.id}:${currUrl}`);
+  }, [mediaReady, widget.id, currUrl]);
+
+  // Silently preload ONLY the next slide after the active slide has finished loading
+  useEffect(() => {
+    if (!mediaReady || !isCurrLoaded || images.length <= 1) return;
+    const nextImg = images[(safeIdx + 1) % images.length];
+    if (!nextImg?.url || loadedUrls[nextImg.url]) return;
+
+    let cancelled = false;
+    const pre = new Image();
+    pre.decoding = 'async';
+    pre.onload = () => {
+      if (!cancelled) {
+        setLoadedUrls((prev) => (prev[nextImg.url] ? prev : { ...prev, [nextImg.url]: true }));
+      }
+    };
+    pre.src = nextImg.url;
+    if (pre.complete && pre.naturalWidth > 0) {
+      setLoadedUrls((prev) => (prev[nextImg.url] ? prev : { ...prev, [nextImg.url]: true }));
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [mediaReady, isCurrLoaded, images, safeIdx, loadedUrls]);
 
   if (images.length === 0) {
     return (
@@ -74,9 +116,13 @@ export function CarouselWidgetBody({
     );
   }
 
-  const safeIdx = activeIndex % images.length;
-  const curr = images[safeIdx];
   const fitClass = widget.fit === 'contain' ? 'object-contain' : 'object-cover';
+  const markSlideSettled = (url: string, success: boolean) => {
+    markTrackedAssetSettled(`carousel:${widget.id}:${url}`);
+    if (success) {
+      setLoadedUrls((prev) => (prev[url] ? prev : { ...prev, [url]: true }));
+    }
+  };
 
   return (
     <div
@@ -84,21 +130,32 @@ export function CarouselWidgetBody({
       onMouseEnter={() => setPaused(true)}
       onMouseLeave={() => setPaused(false)}
     >
-      {widget.transition === 'fade' ? (
+      {!mediaReady ? (
+        <div className="h-full w-full bg-[var(--bg-subtle)] animate-pulse flex items-center justify-center">
+          <Images size={20} className="text-[var(--ink-muted)]/45" />
+        </div>
+      ) : widget.transition === 'fade' ? (
         <div className="relative h-full w-full">
-          {images.map((img, i) => (
-            <img
-              key={img.id}
-              src={img.url}
-              alt={img.caption || widget.title || 'carousel'}
-              draggable={false}
-              style={{
-                opacity: i === safeIdx ? 1 : 0,
-                transition: 'opacity 500ms ease',
-              }}
-              className={`absolute inset-0 h-full w-full ${fitClass} pointer-events-none select-none`}
-            />
-          ))}
+          {images.map((img, i) => {
+            const shouldMount = i === safeIdx || Boolean(loadedUrls[img.url]);
+            if (!shouldMount) return null;
+            return (
+              <img
+                key={img.id}
+                src={img.url}
+                alt={img.caption || widget.title || 'carousel'}
+                draggable={false}
+                decoding="async"
+                onLoad={() => markSlideSettled(img.url, true)}
+                onError={() => markSlideSettled(img.url, false)}
+                style={{
+                  opacity: i === safeIdx ? 1 : 0,
+                  transition: 'opacity 500ms ease',
+                }}
+                className={`absolute inset-0 h-full w-full ${fitClass} pointer-events-none select-none`}
+              />
+            );
+          })}
         </div>
       ) : (
         <div
@@ -108,16 +165,24 @@ export function CarouselWidgetBody({
             transition: 'transform 480ms cubic-bezier(0.22, 1, 0.36, 1)',
           }}
         >
-          {images.map((img) => (
-            <div key={img.id} className="relative h-full w-full shrink-0">
-              <img
-                src={img.url}
-                alt={img.caption || widget.title || 'carousel'}
-                draggable={false}
-                className={`h-full w-full ${fitClass} pointer-events-none select-none`}
-              />
-            </div>
-          ))}
+          {images.map((img, i) => {
+            const shouldMount = i === safeIdx || Boolean(loadedUrls[img.url]);
+            return (
+              <div key={img.id} className="relative h-full w-full shrink-0 bg-[var(--bg-subtle)]">
+                {shouldMount && (
+                  <img
+                    src={img.url}
+                    alt={img.caption || widget.title || 'carousel'}
+                    draggable={false}
+                    decoding="async"
+                    onLoad={() => markSlideSettled(img.url, true)}
+                    onError={() => markSlideSettled(img.url, false)}
+                    className={`h-full w-full ${fitClass} pointer-events-none select-none`}
+                  />
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 

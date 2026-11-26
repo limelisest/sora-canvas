@@ -678,6 +678,7 @@ export async function deleteHistorySnapshot(dataDir: string, snapshotId: string)
     }
     throw err;
   }
+  void pruneOrphanedUploads(dataDir).catch(() => {});
 }
 
 export async function saveCanvas(
@@ -725,6 +726,7 @@ export async function saveCanvas(
   } catch {
     canvasCache.delete(path.resolve(canvasPath));
   }
+  void pruneOrphanedUploads(dataDir).catch(() => {});
   return stamped;
 }
 
@@ -838,4 +840,92 @@ export function sanitizeCanvasForPublic(doc: CanvasDocument): {
     },
     hasPrivateHidden,
   };
+}
+
+const UPLOAD_REF_RE = /\/api\/uploads\/([a-f0-9]{16,64}\.(?:png|jpg|jpeg|webp|gif|avif))/gi;
+const UPLOAD_FILE_RE = /^[a-f0-9]{16,64}\.(png|jpg|jpeg|webp|gif|avif)$/i;
+const TMP_RESIDUAL_MAX_AGE_MS = 10 * 60 * 1000;
+
+function collectUploadRefsFromText(raw: string, out: Set<string>): void {
+  UPLOAD_REF_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = UPLOAD_REF_RE.exec(raw)) !== null) {
+    out.add(match[1]);
+  }
+}
+
+export async function pruneOrphanedUploads(
+  dataDir: string,
+  graceMs = 5 * 60 * 1000
+): Promise<{ removed: string[] }> {
+  const uploadsDir = path.join(dataDir, 'uploads');
+  let entries: string[];
+  try {
+    entries = await fs.readdir(uploadsDir);
+  } catch {
+    return { removed: [] };
+  }
+  if (entries.length === 0) return { removed: [] };
+
+  const referenced = new Set<string>();
+
+  for (const relPath of ['canvas.json', 'settings.json']) {
+    try {
+      const raw = await fs.readFile(path.join(dataDir, relPath), 'utf8');
+      collectUploadRefsFromText(raw, referenced);
+    } catch {
+      // Missing or unreadable optional file
+    }
+  }
+
+  const historyDir = path.join(dataDir, 'history');
+  try {
+    const historyFiles = (await fs.readdir(historyDir)).filter((f) => f.endsWith('.json'));
+    await Promise.all(
+      historyFiles.map(async (hf) => {
+        try {
+          const raw = await fs.readFile(path.join(historyDir, hf), 'utf8');
+          collectUploadRefsFromText(raw, referenced);
+        } catch {
+          // Skip unreadable snapshot
+        }
+      })
+    );
+  } catch {
+    // No history directory yet
+  }
+
+  const now = Date.now();
+  const removed: string[] = [];
+
+  for (const entry of entries) {
+    const fullPath = path.join(uploadsDir, entry);
+    let stat: Awaited<ReturnType<typeof fs.stat>>;
+    try {
+      stat = await fs.stat(fullPath);
+    } catch {
+      continue;
+    }
+    if (!stat.isFile()) continue;
+
+    if (entry.includes('.tmp.')) {
+      if (now - stat.mtimeMs >= TMP_RESIDUAL_MAX_AGE_MS) {
+        await fs.unlink(fullPath).catch(() => {});
+      }
+      continue;
+    }
+
+    if (!UPLOAD_FILE_RE.test(entry)) continue;
+    if (referenced.has(entry)) continue;
+    if (now - stat.mtimeMs < graceMs) continue;
+
+    try {
+      await fs.unlink(fullPath);
+      removed.push(entry);
+    } catch {
+      // Ignore concurrent deletion
+    }
+  }
+
+  return { removed };
 }

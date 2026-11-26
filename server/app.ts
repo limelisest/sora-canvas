@@ -5,6 +5,7 @@ import path from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyCookie from '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
+import sharp from 'sharp';
 import type { AgentOp, CanvasDocument, CanvasResponse, SiteSettings } from '../shared/types.js';
 import { GRID_DENSITY_MAP } from '../shared/settings.js';
 import { validateCanvasDocument } from '../shared/gridEngine.js';
@@ -360,13 +361,28 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         return reply.code(413).send({ ok: false, error: '单张图片大小不能超过 10 MB' });
       }
 
-      const hash = crypto.createHash('sha256').update(buffer).digest('hex').slice(0, 24);
-      const filename = `${hash}.${ext}`;
+      let outputBuffer: Buffer = buffer;
+      let outputExt = ext;
+      if (mime !== 'image/gif') {
+        try {
+          outputBuffer = await sharp(buffer)
+            .rotate()
+            .resize({ width: 1600, height: 1600, fit: 'inside', withoutEnlargement: true })
+            .webp({ quality: 84 })
+            .toBuffer();
+          outputExt = 'webp';
+        } catch {
+          return reply.code(400).send({ ok: false, error: '图片解析或 WebP 转码失败' });
+        }
+      }
+
+      const hash = crypto.createHash('sha256').update(outputBuffer).digest('hex').slice(0, 24);
+      const filename = `${hash}.${outputExt}`;
       const uploadsDir = path.join(dataDir, 'uploads');
       await fsp.mkdir(uploadsDir, { recursive: true });
       const targetPath = path.join(uploadsDir, filename);
       const tmpPath = `${targetPath}.tmp.${process.pid}.${Date.now()}.${crypto.randomBytes(3).toString('hex')}`;
-      await fsp.writeFile(tmpPath, buffer);
+      await fsp.writeFile(tmpPath, outputBuffer);
       await fsp.rename(tmpPath, targetPath);
 
       return { ok: true, url: `/api/uploads/${filename}` };
