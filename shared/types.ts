@@ -46,6 +46,7 @@ export type OpenTargetMode = '_blank' | '_self';
 export type DragOutItemSizeMode = '1x1' | 'preserve';
 export type RememberDays = 7 | 30 | 90 | 365;
 export type ViewportMode = 'anchor' | 'auto';
+export type MobileDefaultView = 'paged' | 'canvas';
 export type CanvasBgStyle = 'dot' | 'aurora' | 'wallpaper';
 export type WheelMode = 'zoom' | 'pan';
 
@@ -81,6 +82,7 @@ export interface SiteSettings {
   slidingRenewal: boolean;
   desktopViewportMode: ViewportMode;
   mobileViewportMode: ViewportMode;
+  mobileDefaultView: MobileDefaultView;
   viewportOrigin: { x: number; y: number } | null;
 }
 

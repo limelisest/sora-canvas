@@ -1,5 +1,6 @@
 import {
   Check,
+  LayoutList,
   Lock,
   Moon,
   Pencil,
@@ -22,6 +23,8 @@ interface TopPillBarProps {
   onOpenSettings: () => void;
   dark: boolean;
   onToggleDark: () => void;
+  showSwitchToPaged?: boolean;
+  onSwitchToPaged?: () => void;
 }
 
 export function TopPillBar({
@@ -35,6 +38,8 @@ export function TopPillBar({
   onOpenSettings,
   dark,
   onToggleDark,
+  showSwitchToPaged = false,
+  onSwitchToPaged,
 }: TopPillBarProps) {
   return (
     <header className="pointer-events-none fixed top-4 left-4 right-4 z-30 flex flex-wrap items-center justify-between gap-2">
@@ -105,6 +110,18 @@ export function TopPillBar({
           >
             <Settings size={13} />
             <span className="hidden sm:inline">设置</span>
+          </button>
+        )}
+
+        {showSwitchToPaged && onSwitchToPaged && (
+          <button
+            type="button"
+            onClick={onSwitchToPaged}
+            className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] transition-colors cursor-pointer"
+            title="切回手机分页导航视图"
+          >
+            <LayoutList size={13} />
+            <span>分页</span>
           </button>
         )}
 

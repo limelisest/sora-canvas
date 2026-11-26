@@ -39,6 +39,7 @@ export const DEFAULT_SITE_SETTINGS: SiteSettings = {
   slidingRenewal: true,
   desktopViewportMode: 'auto',
   mobileViewportMode: 'anchor',
+  mobileDefaultView: 'paged',
   viewportOrigin: null,
 };
 
@@ -172,6 +173,10 @@ export function normalizeSiteSettings(raw: Partial<SiteSettings> | null | undefi
       s.mobileViewportMode === 'anchor' || s.mobileViewportMode === 'auto'
         ? s.mobileViewportMode
         : DEFAULT_SITE_SETTINGS.mobileViewportMode,
+    mobileDefaultView:
+      s.mobileDefaultView === 'paged' || s.mobileDefaultView === 'canvas'
+        ? s.mobileDefaultView
+        : DEFAULT_SITE_SETTINGS.mobileDefaultView,
     viewportOrigin,
   };
 }

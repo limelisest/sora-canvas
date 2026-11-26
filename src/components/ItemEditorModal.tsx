@@ -38,6 +38,7 @@ interface ItemEditorModalProps {
   onClose: () => void;
   onSave: (payload: ItemEditorSavePayload) => string | null | void;
   onRequestDeleteFolder?: (folder: FolderContainer) => void;
+  onRequestDeleteItem?: (item: BookmarkItem) => void;
 }
 
 const ACCENT_PRESETS = [
@@ -60,6 +61,7 @@ export function ItemEditorModal({
   onClose,
   onSave,
   onRequestDeleteFolder,
+  onRequestDeleteItem,
 }: ItemEditorModalProps) {
   const isFolder = draft?.mode === 'create-folder' || draft?.mode === 'edit-folder';
   const isEdit = draft?.mode === 'edit-item' || draft?.mode === 'edit-folder';
@@ -506,6 +508,15 @@ export function ItemEditorModal({
               >
                 <Trash2 size={13} />
                 <span>解散 / 删除</span>
+              </button>
+            ) : draft.mode === 'edit-item' && onRequestDeleteItem ? (
+              <button
+                type="button"
+                onClick={() => onRequestDeleteItem(draft.item)}
+                className="inline-flex items-center gap-1 rounded-full px-3 py-2 text-xs font-medium text-[var(--accent-red)] hover:bg-red-500/10 cursor-pointer"
+              >
+                <Trash2 size={13} />
+                <span>删除书签</span>
               </button>
             ) : (
               <span />

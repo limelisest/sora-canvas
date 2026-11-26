@@ -6,6 +6,7 @@ import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../server/app.js';
 import { normalizeDocument } from '../server/store.js';
+import { normalizeSiteSettings } from '../shared/settings.js';
 
 let tmpDir: string;
 let app: FastifyInstance;
@@ -521,7 +522,12 @@ test('v3 settings, /llms.txt discovery, token rotation, device revoke-all, and b
   });
   const cookieB = extractSessionCookie(unlockB.headers['set-cookie']);
 
-  // 3. PUT /api/settings updates siteTitle, defaultFolderW/H, and syncs gridDensity -> canvas.grid
+  // 3. PUT /api/settings updates siteTitle, defaultFolderW/H, mobileDefaultView, and syncs gridDensity -> canvas.grid
+  assert.equal(normalizeSiteSettings({ siteTitle: 'Legacy' }).mobileDefaultView, 'paged');
+
+  const initialCanvasSettings = await app.inject({ method: 'GET', url: '/api/canvas' });
+  assert.equal(initialCanvasSettings.json().settings.mobileDefaultView, 'paged');
+
   const setRes = await app.inject({
     method: 'PUT',
     url: '/api/settings',
@@ -531,16 +537,28 @@ test('v3 settings, /llms.txt discovery, token rotation, device revoke-all, and b
       defaultFolderW: 3,
       defaultFolderH: 3,
       gridDensity: 'compact',
+      mobileDefaultView: 'canvas',
     },
   });
   assert.equal(setRes.statusCode, 200);
   assert.equal(setRes.json().settings.siteTitle, 'My Neko Space');
   assert.equal(setRes.json().settings.defaultFolderW, 3);
+  assert.equal(setRes.json().settings.mobileDefaultView, 'canvas');
   assert.deepEqual(setRes.json().grid, { cellSize: 92, gap: 12 });
 
   const canvasWithSettings = await app.inject({ method: 'GET', url: '/api/canvas' });
   assert.equal(canvasWithSettings.json().settings.siteTitle, 'My Neko Space');
+  assert.equal(canvasWithSettings.json().settings.mobileDefaultView, 'canvas');
   assert.deepEqual(canvasWithSettings.json().grid, { cellSize: 92, gap: 12 });
+
+  const restorePagedRes = await app.inject({
+    method: 'PUT',
+    url: '/api/settings',
+    headers: { cookie: cookieA },
+    payload: { mobileDefaultView: 'paged' },
+  });
+  assert.equal(restorePagedRes.statusCode, 200);
+  assert.equal(restorePagedRes.json().settings.mobileDefaultView, 'paged');
 
   // 4. Agent credentials & token rotation invalidates old token and accepts new token
   const credRes = await app.inject({

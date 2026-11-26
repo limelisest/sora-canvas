@@ -309,7 +309,7 @@ export function SettingsView({
               className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] transition-colors cursor-pointer"
             >
               <ArrowLeft size={13} />
-              <span>返回画布</span>
+              <span>返回首页</span>
             </button>
             <span className="h-4 w-px bg-[var(--border-hair)]" />
             <span className="flex items-center gap-2 font-semibold text-sm pr-1">
@@ -815,6 +815,55 @@ export function SettingsView({
                   </div>
                 </>
               )}
+            </div>
+
+            <div className="p-3 rounded-2xl bg-[var(--bg-subtle)] border border-[var(--border-hair)] space-y-2.5">
+              <div>
+                <div className="font-medium">手机端默认首页视图</div>
+                <div className="text-[11px] text-[var(--ink-muted)] mt-0.5 leading-relaxed">
+                  控制手机或窄屏访问首页时的默认展示方式；随时可通过顶部快捷按钮在分页与画布间切换。
+                </div>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => void commitPatch({ mobileDefaultView: 'paged' })}
+                  className={`text-left p-2.5 rounded-xl border transition-colors cursor-pointer ${
+                    draft.mobileDefaultView === 'paged'
+                      ? 'bg-[var(--bg-card)] border-[var(--accent-orange)] ring-1 ring-[var(--accent-orange)]/30'
+                      : 'bg-[var(--bg-card)] border-[var(--border-hair)] hover:border-[var(--border-strong)]'
+                  }`}
+                >
+                  <div className="font-medium flex items-center justify-between gap-2">
+                    <span>分页分类导航（推荐）</span>
+                    {draft.mobileDefaultView === 'paged' && (
+                      <Check size={13} className="text-[var(--accent-orange)] shrink-0" />
+                    )}
+                  </div>
+                  <div className="text-[11px] text-[var(--ink-muted)] mt-0.5">
+                    吸顶分类胶囊、单手触控与左右滑屏切换
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void commitPatch({ mobileDefaultView: 'canvas' })}
+                  className={`text-left p-2.5 rounded-xl border transition-colors cursor-pointer ${
+                    draft.mobileDefaultView === 'canvas'
+                      ? 'bg-[var(--bg-card)] border-[var(--accent-orange)] ring-1 ring-[var(--accent-orange)]/30'
+                      : 'bg-[var(--bg-card)] border-[var(--border-hair)] hover:border-[var(--border-strong)]'
+                  }`}
+                >
+                  <div className="font-medium flex items-center justify-between gap-2">
+                    <span>无限二维画布</span>
+                    {draft.mobileDefaultView === 'canvas' && (
+                      <Check size={13} className="text-[var(--accent-orange)] shrink-0" />
+                    )}
+                  </div>
+                  <div className="text-[11px] text-[var(--ink-muted)] mt-0.5">
+                    保留桌面二维空间与小部件 / 便签自由排版
+                  </div>
+                </button>
+              </div>
             </div>
 
             <div className="p-3 rounded-2xl bg-[var(--bg-subtle)] border border-[var(--border-hair)] space-y-3">

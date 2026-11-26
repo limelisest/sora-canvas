@@ -9,6 +9,7 @@ import type {
   FolderContainer,
   FolderDisplayMode,
   FreeTextWidget,
+  MobileDefaultView,
   NoteWidget,
   SiteSettings,
   ZoneContainer,
@@ -35,6 +36,7 @@ import { InfiniteCanvas, type InfiniteCanvasHandle } from './components/Infinite
 import { ZoomControlPill } from './components/ZoomControlPill';
 import {
   computeInitialView,
+  isMobileViewport,
   MAX_VIEW_SCALE,
   MIN_VIEW_SCALE,
   resolveActiveViewportMode,
@@ -49,6 +51,7 @@ import type {
 } from './components/ZoneWidgetEditorModal';
 import type { ContextMenuState } from './components/ContextMenu';
 import { FolderNavBar } from './components/FolderNavBar';
+import { MobileNavView } from './components/MobileNavView';
 
 const SettingsView = lazy(() =>
   import('./components/SettingsView').then((m) => ({ default: m.SettingsView }))
@@ -125,6 +128,8 @@ export default function App() {
     () => INITIAL_BOOT?.settings ?? DEFAULT_SITE_SETTINGS
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(() => isMobileViewport());
+  const [mobileViewOverride, setMobileViewOverride] = useState<MobileDefaultView | null>(null);
   const [loading, setLoading] = useState(() => !INITIAL_BOOT);
   const [unlocked, setUnlocked] = useState(() => Boolean(INITIAL_BOOT?.unlocked));
   const [hasPrivateHidden, setHasPrivateHidden] = useState(() =>
@@ -208,6 +213,14 @@ export default function App() {
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark);
   }, [dark]);
+
+  useEffect(() => {
+    const onResize = () => {
+      setIsMobile(isMobileViewport());
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   useEffect(() => {
     document.title = settings.siteTitle;
@@ -631,6 +644,9 @@ export default function App() {
         patch.gridDensity !== undefined
       ) {
         setView(computeInitialView(nextDoc, res.settings));
+      }
+      if (patch.mobileDefaultView !== undefined) {
+        setMobileViewOverride(null);
       }
     },
     [doc]
@@ -1530,6 +1546,19 @@ export default function App() {
     return base;
   }, [activeFolder, doc.items, reorderPreview]);
 
+  const activeMobileView: MobileDefaultView = mobileViewOverride ?? settings.mobileDefaultView;
+  const showMobilePaged = isMobile && activeMobileView === 'paged';
+
+  const handleSwitchMobileView = useCallback(
+    (mode: MobileDefaultView) => {
+      setMobileViewOverride(mode);
+      if (mode === 'canvas') {
+        setView(computeInitialView(doc, settings));
+      }
+    },
+    [doc, settings]
+  );
+
   const selectedSet = new Set(selectedIds);
   const selectedItemCount = doc.items.filter(
     (i) => i.parentId === null && selectedSet.has(i.id)
@@ -1562,166 +1591,191 @@ export default function App() {
         </Suspense>
       ) : (
         <>
-          <TopPillBar
-            settings={settings}
-            onOpenSearch={() => setSearchOpen(true)}
-            unlocked={unlocked}
-            hasPrivateHidden={hasPrivateHidden}
-            onLockToggle={handleLockToggle}
-            editMode={editMode}
-            onToggleEditMode={handleToggleEditMode}
-            onOpenSettings={() => setSettingsOpen(true)}
-            dark={dark}
-            onToggleDark={toggleDark}
-          />
-
-          {loading ? (
-            <div className="w-full h-full flex items-center justify-center text-sm text-[var(--ink-muted)]">
-              正在加载画布...
-            </div>
-          ) : (
-            <InfiniteCanvas
-              ref={canvasRef}
-              entities={topLevelEntities}
-              folders={doc.folders}
-              items={doc.items}
-              zones={doc.zones ?? []}
-              widgets={doc.widgets ?? []}
-              grid={doc.grid}
+          {showMobilePaged ? (
+            <MobileNavView
               settings={settings}
-              editMode={editMode}
-              marqueeMode={marqueeMode}
-              selectedIds={selectedIds}
-              scale={view.scale}
-              panX={view.panX}
-              panY={view.panY}
-              viewportOrigin={resolvedOrigin}
-              onViewportChange={setView}
-              onUpdateViewportOrigin={(origin) => void handleUpdateViewportOrigin(origin)}
-              onSelectIds={setSelectedIds}
-              onCommitLayout={handleCommitLayout}
-              onCommitZones={handleCommitZones}
-              onCommitZoneGroup={handleCommitZoneGroup}
-              onCommitTextWidgets={handleCommitTextWidgets}
-              onMoveItemsToFolder={handleMoveItemsToFolder}
-              onMergeItemsToFolder={handleMergeItemsToFolder}
-              onDropChildToCanvas={handleDropChildToCanvas}
-              onReorderFolderItems={handleReorderFolderItems}
-              onPreviewReorderChange={setReorderPreview}
-              onModalHiddenForDragChange={setModalHiddenForDrag}
-              onDraggingChildIdChange={setDraggingChildId}
-              onCloseFolderModal={() => setActiveFolderId(null)}
-              onOpenFolder={(folder) => setActiveFolderId(folder.id)}
-              onEditEntity={handleEditAnyEntity}
-              onEditZone={(zone) => setZwDraft({ mode: 'edit-zone', zone })}
-              onEditWidget={handleEditWidget}
-              onRequestEditNote={handleRequestEditNote}
-              onCycleFolderMode={handleCycleFolderMode}
-              onOpenContextMenu={(e, target) =>
-                setContextMenu({ x: e.clientX, y: e.clientY, target })
-              }
-              flyTransition={flyTransition}
-              onStatusToast={showToast}
-            />
-          )}
-
-          {!loading && settings.showFolderNav && (
-            <FolderNavBar
               folders={doc.folders}
               items={doc.items}
-              editMode={editMode}
-              onFocusFolder={handleFocusFolder}
-              onOpenFolder={(folder) => setActiveFolderId(folder.id)}
-            />
-          )}
-
-          {!loading && (
-            <ZoomControlPill
-              scale={view.scale}
-              editMode={editMode}
-              anchorMode={resolveActiveViewportMode(settings) === 'anchor'}
-              onZoomIn={() => handleZoomStep('in')}
-              onZoomOut={() => handleZoomStep('out')}
-              onResetView={handleResetView}
-            />
-          )}
-
-          {editMode && (
-            <EditDock
-              selectedCount={selectedIds.length}
-              selectedItemCount={selectedItemCount}
-              folders={doc.folders}
-              marqueeMode={marqueeMode}
-              showAnchorButton={
-                settings.desktopViewportMode === 'anchor' ||
-                settings.mobileViewportMode === 'anchor'
+              loading={loading}
+              unlocked={unlocked}
+              hasPrivateHidden={hasPrivateHidden}
+              dark={dark}
+              onToggleDark={toggleDark}
+              onLockToggle={() => void handleLockToggle()}
+              onSwitchToCanvas={() => handleSwitchMobileView('canvas')}
+              onOpenSettings={() => setSettingsOpen(true)}
+              onCreateItem={(defaultParentId) =>
+                setEditorDraft({ mode: 'create-item', defaultParentId })
               }
-              canUndo={undoStack.length > 0}
-              canRedo={redoStack.length > 0}
-              onCreateItem={() => setEditorDraft({ mode: 'create-item', defaultParentId: null })}
-              onCreateFolder={() => setEditorDraft({ mode: 'create-folder' })}
-              onCreateZone={() => openZwCreator('zone')}
-              onCreateCarousel={() => openZwCreator('carousel')}
-              onCreateText={() => openZwCreator('text')}
-              onCreateNote={() => openZwCreator('note')}
-              onToggleMarquee={() => setMarqueeMode((v) => !v)}
-              onSetViewportOrigin={() => void handleSetViewportOrigin()}
-              onEditSelected={() => {
-                if (selectedIds.length !== 1) return;
-                const selId = selectedIds[0];
-                const entity = topLevelEntities.find((e) => e.id === selId);
-                if (entity) {
-                  handleEditAnyEntity(entity);
-                  return;
-                }
-                const zone = (doc.zones ?? []).find((z) => z.id === selId);
-                if (zone) {
-                  setZwDraft({ mode: 'edit-zone', zone });
-                  return;
-                }
-                const widget = (doc.widgets ?? []).find((w) => w.id === selId);
-                if (widget) {
-                  handleEditWidget(widget);
-                }
-              }}
-              onDeleteSelected={() => handleDeleteEntities(selectedIds)}
-              onMoveSelectedItemsToFolder={(folderId) => {
-                const itemIds = doc.items
-                  .filter((i) => i.parentId === null && selectedSet.has(i.id))
-                  .map((i) => i.id);
-                handleMoveItemsToFolder(itemIds, folderId);
-              }}
-              onUndo={handleUndo}
-              onRedo={handleRedo}
+              onEditItem={(item) => setEditorDraft({ mode: 'edit-item', item })}
+              onEditFolder={(folder) => setEditorDraft({ mode: 'edit-folder', folder })}
             />
-          )}
+          ) : (
+            <>
+              <TopPillBar
+                settings={settings}
+                onOpenSearch={() => setSearchOpen(true)}
+                unlocked={unlocked}
+                hasPrivateHidden={hasPrivateHidden}
+                onLockToggle={handleLockToggle}
+                editMode={editMode}
+                onToggleEditMode={handleToggleEditMode}
+                onOpenSettings={() => setSettingsOpen(true)}
+                dark={dark}
+                onToggleDark={toggleDark}
+                showSwitchToPaged={isMobile && activeMobileView === 'canvas'}
+                onSwitchToPaged={() => handleSwitchMobileView('paged')}
+              />
 
-          <FolderModal
-            folder={activeFolder}
-            items={activeFolderItems}
-            editMode={editMode}
-            openTarget={settings.openTarget}
-            hiddenForDrag={modalHiddenForDrag}
-            draggingItemId={draggingChildId}
-            onClose={() => setActiveFolderId(null)}
-            onEditFolderProps={(folder) => setEditorDraft({ mode: 'edit-folder', folder })}
-            onRequestDeleteFolder={handleRequestDeleteFolder}
-            onAddItemToFolder={(folderId) =>
-              setEditorDraft({ mode: 'create-item', defaultParentId: folderId })
-            }
-            onEditItem={(item) => setEditorDraft({ mode: 'edit-item', item })}
-            onReorderItems={handleReorderFolderItems}
-            onExtractItemToCanvas={handleExtractItemToCanvas}
-            onDeleteItem={(itemId) =>
-              void commitDocState(
-                doc.folders,
-                doc.items.filter((i) => i.id !== itemId)
-              )
-            }
-            onModalChildPointerDown={(e, folder, item, modalRect) =>
-              canvasRef.current?.startModalChildPointerDown(e, folder, item, modalRect)
-            }
-          />
+              {loading ? (
+                <div className="w-full h-full flex items-center justify-center text-sm text-[var(--ink-muted)]">
+                  正在加载画布...
+                </div>
+              ) : (
+                <InfiniteCanvas
+                  ref={canvasRef}
+                  entities={topLevelEntities}
+                  folders={doc.folders}
+                  items={doc.items}
+                  zones={doc.zones ?? []}
+                  widgets={doc.widgets ?? []}
+                  grid={doc.grid}
+                  settings={settings}
+                  editMode={editMode}
+                  marqueeMode={marqueeMode}
+                  selectedIds={selectedIds}
+                  scale={view.scale}
+                  panX={view.panX}
+                  panY={view.panY}
+                  viewportOrigin={resolvedOrigin}
+                  onViewportChange={setView}
+                  onUpdateViewportOrigin={(origin) => void handleUpdateViewportOrigin(origin)}
+                  onSelectIds={setSelectedIds}
+                  onCommitLayout={handleCommitLayout}
+                  onCommitZones={handleCommitZones}
+                  onCommitZoneGroup={handleCommitZoneGroup}
+                  onCommitTextWidgets={handleCommitTextWidgets}
+                  onMoveItemsToFolder={handleMoveItemsToFolder}
+                  onMergeItemsToFolder={handleMergeItemsToFolder}
+                  onDropChildToCanvas={handleDropChildToCanvas}
+                  onReorderFolderItems={handleReorderFolderItems}
+                  onPreviewReorderChange={setReorderPreview}
+                  onModalHiddenForDragChange={setModalHiddenForDrag}
+                  onDraggingChildIdChange={setDraggingChildId}
+                  onCloseFolderModal={() => setActiveFolderId(null)}
+                  onOpenFolder={(folder) => setActiveFolderId(folder.id)}
+                  onEditEntity={handleEditAnyEntity}
+                  onEditZone={(zone) => setZwDraft({ mode: 'edit-zone', zone })}
+                  onEditWidget={handleEditWidget}
+                  onRequestEditNote={handleRequestEditNote}
+                  onCycleFolderMode={handleCycleFolderMode}
+                  onOpenContextMenu={(e, target) =>
+                    setContextMenu({ x: e.clientX, y: e.clientY, target })
+                  }
+                  flyTransition={flyTransition}
+                  onStatusToast={showToast}
+                />
+              )}
+
+              {!loading && settings.showFolderNav && (
+                <FolderNavBar
+                  folders={doc.folders}
+                  items={doc.items}
+                  editMode={editMode}
+                  onFocusFolder={handleFocusFolder}
+                  onOpenFolder={(folder) => setActiveFolderId(folder.id)}
+                />
+              )}
+
+              {!loading && (
+                <ZoomControlPill
+                  scale={view.scale}
+                  editMode={editMode}
+                  anchorMode={resolveActiveViewportMode(settings) === 'anchor'}
+                  onZoomIn={() => handleZoomStep('in')}
+                  onZoomOut={() => handleZoomStep('out')}
+                  onResetView={handleResetView}
+                />
+              )}
+
+              {editMode && (
+                <EditDock
+                  selectedCount={selectedIds.length}
+                  selectedItemCount={selectedItemCount}
+                  folders={doc.folders}
+                  marqueeMode={marqueeMode}
+                  showAnchorButton={
+                    settings.desktopViewportMode === 'anchor' ||
+                    settings.mobileViewportMode === 'anchor'
+                  }
+                  canUndo={undoStack.length > 0}
+                  canRedo={redoStack.length > 0}
+                  onCreateItem={() => setEditorDraft({ mode: 'create-item', defaultParentId: null })}
+                  onCreateFolder={() => setEditorDraft({ mode: 'create-folder' })}
+                  onCreateZone={() => openZwCreator('zone')}
+                  onCreateCarousel={() => openZwCreator('carousel')}
+                  onCreateText={() => openZwCreator('text')}
+                  onCreateNote={() => openZwCreator('note')}
+                  onToggleMarquee={() => setMarqueeMode((v) => !v)}
+                  onSetViewportOrigin={() => void handleSetViewportOrigin()}
+                  onEditSelected={() => {
+                    if (selectedIds.length !== 1) return;
+                    const selId = selectedIds[0];
+                    const entity = topLevelEntities.find((e) => e.id === selId);
+                    if (entity) {
+                      handleEditAnyEntity(entity);
+                      return;
+                    }
+                    const zone = (doc.zones ?? []).find((z) => z.id === selId);
+                    if (zone) {
+                      setZwDraft({ mode: 'edit-zone', zone });
+                      return;
+                    }
+                    const widget = (doc.widgets ?? []).find((w) => w.id === selId);
+                    if (widget) {
+                      handleEditWidget(widget);
+                    }
+                  }}
+                  onDeleteSelected={() => handleDeleteEntities(selectedIds)}
+                  onMoveSelectedItemsToFolder={(folderId) => {
+                    const itemIds = doc.items
+                      .filter((i) => i.parentId === null && selectedSet.has(i.id))
+                      .map((i) => i.id);
+                    handleMoveItemsToFolder(itemIds, folderId);
+                  }}
+                  onUndo={handleUndo}
+                  onRedo={handleRedo}
+                />
+              )}
+
+              <FolderModal
+                folder={activeFolder}
+                items={activeFolderItems}
+                editMode={editMode}
+                openTarget={settings.openTarget}
+                hiddenForDrag={modalHiddenForDrag}
+                draggingItemId={draggingChildId}
+                onClose={() => setActiveFolderId(null)}
+                onEditFolderProps={(folder) => setEditorDraft({ mode: 'edit-folder', folder })}
+                onRequestDeleteFolder={handleRequestDeleteFolder}
+                onAddItemToFolder={(folderId) =>
+                  setEditorDraft({ mode: 'create-item', defaultParentId: folderId })
+                }
+                onEditItem={(item) => setEditorDraft({ mode: 'edit-item', item })}
+                onReorderItems={handleReorderFolderItems}
+                onExtractItemToCanvas={handleExtractItemToCanvas}
+                onDeleteItem={(itemId) =>
+                  void commitDocState(
+                    doc.folders,
+                    doc.items.filter((i) => i.id !== itemId)
+                  )
+                }
+                onModalChildPointerDown={(e, folder, item, modalRect) =>
+                  canvasRef.current?.startModalChildPointerDown(e, folder, item, modalRect)
+                }
+              />
+            </>
+          )}
 
           <Suspense fallback={null}>
             {editorDraft && (
@@ -1732,10 +1786,18 @@ export default function App() {
                 onClose={() => setEditorDraft(null)}
                 onSave={handleSaveEditor}
                 onRequestDeleteFolder={handleRequestDeleteFolder}
+                onRequestDeleteItem={(item) => {
+                  setEditorDraft(null);
+                  void commitDocState(
+                    doc.folders,
+                    doc.items.filter((i) => i.id !== item.id)
+                  );
+                  showToast('已删除书签');
+                }}
               />
             )}
 
-            {zwDraft && (
+            {!showMobilePaged && zwDraft && (
               <ZoneWidgetEditorModal
                 draft={zwDraft}
                 onClose={() => setZwDraft(null)}
@@ -1755,7 +1817,7 @@ export default function App() {
               />
             )}
 
-            {searchOpen && (
+            {!showMobilePaged && searchOpen && (
               <SearchPalette
                 open={searchOpen}
                 folders={doc.folders}
@@ -1766,7 +1828,7 @@ export default function App() {
               />
             )}
 
-            {contextMenu && (
+            {!showMobilePaged && contextMenu && (
               <ContextMenu
                 menu={contextMenu}
                 unlocked={unlocked}
