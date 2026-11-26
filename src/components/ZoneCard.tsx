@@ -180,7 +180,7 @@ export function ZoneOverlay({
       }}
       className="pointer-events-none select-none"
     >
-      {/* Bottom-right floating title pill */}
+      {/* Bottom-right floating title pill centered on the bottom border */}
       <div
         onPointerDown={
           editMode
@@ -201,10 +201,10 @@ export function ZoneOverlay({
         style={{
           borderColor: `color-mix(in srgb, ${box.accent} 28%, var(--border-hair))`,
         }}
-        className={`absolute inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold bg-[var(--bg-card)]/92 backdrop-blur-md border shadow-sm ${
+        className={`absolute bottom-0 translate-y-1/2 inline-flex items-center gap-1.5 rounded-full px-3.5 py-1 text-[13px] leading-tight font-semibold bg-[var(--bg-card)]/96 backdrop-blur-md border shadow-sm transition-[right] duration-150 ${
           editMode
-            ? 'bottom-1.5 right-7.5 max-w-[calc(100%-46px)] pointer-events-auto cursor-grab active:cursor-grabbing'
-            : 'bottom-2 right-2.5 max-w-[calc(100%-20px)] pointer-events-none'
+            ? 'right-8 max-w-[calc(100%-52px)] pointer-events-auto cursor-grab active:cursor-grabbing'
+            : 'right-2 max-w-[calc(100%-24px)] pointer-events-none'
         }`}
         title={
           editMode
@@ -213,10 +213,10 @@ export function ZoneOverlay({
         }
       >
         <span
-          className="h-2 w-2 rounded-full shrink-0"
+          className="h-2.5 w-2.5 rounded-full shrink-0"
           style={{ backgroundColor: zone.isPrivate ? '#ff5500' : box.accent }}
         />
-        {zone.isPrivate && <Lock size={10} className="text-amber-500 shrink-0" />}
+        {zone.isPrivate && <Lock size={11.5} className="text-amber-500 shrink-0" />}
         <span className="truncate text-[var(--ink-main)]">{zone.title}</span>
         {editMode && (
           <button
@@ -226,10 +226,10 @@ export function ZoneOverlay({
               e.stopPropagation();
               onEditZone(zone);
             }}
-            className="ml-0.5 h-4 w-4 rounded-full inline-flex items-center justify-center text-[var(--ink-muted)] hover:text-[var(--ink-main)] hover:bg-[var(--bg-subtle)] cursor-pointer shrink-0"
+            className="ml-0.5 h-4.5 w-4.5 rounded-full inline-flex items-center justify-center text-[var(--ink-muted)] hover:text-[var(--ink-main)] hover:bg-[var(--bg-subtle)] cursor-pointer shrink-0"
             title="编辑分区框"
           >
-            <Pencil size={9.5} />
+            <Pencil size={11} />
           </button>
         )}
       </div>
@@ -249,7 +249,7 @@ export function ZoneOverlay({
           <div
             onPointerDown={(e) => onZonePointerDown(e, zone)}
             onContextMenu={handleZoneContextMenu}
-            className="pointer-events-auto absolute bottom-0 left-3 right-8 h-2 cursor-grab active:cursor-grabbing"
+            className="pointer-events-auto absolute bottom-0 left-3 right-9 h-2 cursor-grab active:cursor-grabbing"
           />
           <div
             onPointerDown={(e) => onZonePointerDown(e, zone)}
@@ -270,10 +270,10 @@ export function ZoneOverlay({
               onZoneResizePointerDown(e, zone);
             }}
             onClick={(e) => e.stopPropagation()}
-            className={`pointer-events-auto absolute bottom-1.5 right-1.5 z-20 h-5 w-5 rounded-md flex items-center justify-center cursor-nwse-resize transition-colors ${
+            className={`pointer-events-auto absolute bottom-0 right-1.5 translate-y-1/2 z-20 h-5.5 w-5.5 rounded-md flex items-center justify-center cursor-nwse-resize transition-colors ${
               isResizing
                 ? 'bg-[var(--accent-orange)] text-white'
-                : 'bg-[var(--bg-card)]/92 text-[var(--ink-muted)] hover:bg-[var(--accent-orange)] hover:text-white border border-[var(--border-hair)] shadow-xs'
+                : 'bg-[var(--bg-card)]/96 text-[var(--ink-muted)] hover:bg-[var(--accent-orange)] hover:text-white border border-[var(--border-hair)] shadow-sm'
             }`}
             title="拖拽角标调整分区范围（整格步进）"
           >
