@@ -843,10 +843,10 @@ export function sanitizeCanvasForPublic(doc: CanvasDocument): {
 }
 
 const UPLOAD_REF_RE = /\/api\/uploads\/([a-f0-9]{16,64}\.(?:png|jpg|jpeg|webp|gif|avif))/gi;
-const UPLOAD_FILE_RE = /^[a-f0-9]{16,64}\.(png|jpg|jpeg|webp|gif|avif)$/i;
+export const UPLOAD_FILE_RE = /^[a-f0-9]{16,64}\.(png|jpg|jpeg|webp|gif|avif)$/i;
 const TMP_RESIDUAL_MAX_AGE_MS = 10 * 60 * 1000;
 
-function collectUploadRefsFromText(raw: string, out: Set<string>): void {
+export function collectUploadRefsFromText(raw: string, out: Set<string>): void {
   UPLOAD_REF_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = UPLOAD_REF_RE.exec(raw)) !== null) {

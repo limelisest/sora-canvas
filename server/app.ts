@@ -22,6 +22,7 @@ import {
   verifyPassword,
 } from './auth.js';
 import {
+  collectUploadRefsFromText,
   createManualSnapshot,
   deleteHistorySnapshot,
   listHistory,
@@ -32,6 +33,7 @@ import {
   sanitizeCanvasForPublic,
   saveCanvas,
   saveSettings,
+  UPLOAD_FILE_RE,
 } from './store.js';
 import { fetchUrlMetadata } from './meta.js';
 import {
@@ -577,6 +579,24 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       return reply.code(401).send({ ok: false, error: '需要鉴权' });
     }
     const [canvas, settings] = await Promise.all([loadCanvas(dataDir), loadSettings(dataDir)]);
+    const referenced = new Set<string>();
+    collectUploadRefsFromText(JSON.stringify(canvas), referenced);
+    collectUploadRefsFromText(JSON.stringify(settings), referenced);
+
+    const uploadsDir = path.join(dataDir, 'uploads');
+    const uploads: Record<string, string> = {};
+    for (const filename of referenced) {
+      if (!UPLOAD_FILE_RE.test(filename)) continue;
+      try {
+        const buf = await fsp.readFile(path.join(uploadsDir, filename));
+        if (buf.length > 0) {
+          uploads[filename] = buf.toString('base64');
+        }
+      } catch {
+        // Ignore missing upload files referenced in data
+      }
+    }
+
     const dateSlug = new Date().toISOString().slice(0, 10);
     reply.header('Content-Disposition', `attachment; filename="neko-like-backup-${dateSlug}.json"`);
     return {
@@ -584,11 +604,19 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       exportedAt: new Date().toISOString(),
       settings,
       canvas,
+      uploads,
     };
   });
 
-  app.post<{ Body: { canvas?: unknown; settings?: Partial<SiteSettings> } }>(
+  app.post<{
+    Body: {
+      canvas?: unknown;
+      settings?: Partial<SiteSettings>;
+      uploads?: Record<string, unknown>;
+    };
+  }>(
     '/api/backup/import',
+    { bodyLimit: 64 * 1024 * 1024 },
     async (request, reply) => {
       if (!isAuthenticated(request, authConfig)) {
         return reply.code(401).send({ ok: false, error: '需要鉴权' });
@@ -605,6 +633,21 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           ok: false,
           error: validation.error || '备份画布存在网格重叠或引用错误',
         });
+      }
+
+      const rawUploads = rawBody?.uploads;
+      if (rawUploads && typeof rawUploads === 'object' && !Array.isArray(rawUploads)) {
+        const uploadsDir = path.join(dataDir, 'uploads');
+        await fsp.mkdir(uploadsDir, { recursive: true });
+        for (const [filename, b64] of Object.entries(rawUploads)) {
+          if (!UPLOAD_FILE_RE.test(filename) || typeof b64 !== 'string' || !b64) continue;
+          const buf = Buffer.from(b64, 'base64');
+          if (buf.length <= 0 || buf.length > 10 * 1024 * 1024) continue;
+          const dest = path.join(uploadsDir, filename);
+          const tmp = path.join(uploadsDir, `.${filename}.tmp-${process.pid}-${Date.now()}`);
+          await fsp.writeFile(tmp, buf);
+          await fsp.rename(tmp, dest);
+        }
       }
 
       const savedCanvas = await saveCanvas(dataDir, normalized.doc, 'backup_import');

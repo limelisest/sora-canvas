@@ -1,4 +1,11 @@
-import { useRef, type PointerEvent as ReactPointerEvent } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import {
   ArrowDown,
   ArrowUp,
@@ -9,10 +16,13 @@ import {
   Lock,
   Pencil,
   Plus,
+  Search,
   Trash2,
   X,
 } from 'lucide-react';
 import type { BookmarkItem, FolderContainer } from '../../shared/types';
+import { fuzzyScore } from '../../shared/pinyin';
+import type { ContextMenuTarget } from './CanvasCard';
 import { IconGlyph } from './IconGlyph';
 import { MarqueeText } from './MarqueeText';
 
@@ -20,6 +30,8 @@ interface FolderModalProps {
   folder: FolderContainer | null;
   items: BookmarkItem[];
   editMode: boolean;
+  unlocked?: boolean;
+  blockEscapeClose?: boolean;
   openTarget?: '_blank' | '_self';
   hiddenForDrag: boolean;
   draggingItemId: string | null;
@@ -31,6 +43,7 @@ interface FolderModalProps {
   onReorderItems: (folderId: string, itemIds: string[]) => void;
   onExtractItemToCanvas: (itemId: string) => void;
   onDeleteItem: (itemId: string) => void;
+  onOpenContextMenu?: (e: ReactMouseEvent, target: ContextMenuTarget) => void;
   onModalChildPointerDown: (
     e: ReactPointerEvent,
     folder: FolderContainer,
@@ -43,6 +56,8 @@ export function FolderModal({
   folder,
   items,
   editMode,
+  unlocked = false,
+  blockEscapeClose = false,
   openTarget = '_blank',
   hiddenForDrag,
   draggingItemId,
@@ -54,11 +69,42 @@ export function FolderModal({
   onReorderItems,
   onExtractItemToCanvas,
   onDeleteItem,
+  onOpenContextMenu,
   onModalChildPointerDown,
 }: FolderModalProps) {
   const modalBoxRef = useRef<HTMLDivElement>(null);
+  const [filterQuery, setFilterQuery] = useState('');
+
+  useEffect(() => {
+    setFilterQuery('');
+  }, [folder?.id]);
+
+  useEffect(() => {
+    if (!folder || hiddenForDrag || blockEscapeClose) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+      }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [folder, hiddenForDrag, blockEscapeClose, onClose]);
+
+  const filteredItems = useMemo(() => {
+    const q = filterQuery.trim();
+    if (!q) return items;
+    return items.filter(
+      (item) =>
+        fuzzyScore(q, item.title, item.subtitle, item.url, ...(item.tags ?? [])) > 0
+    );
+  }, [items, filterQuery]);
 
   if (!folder) return null;
+
+  const canManage = editMode || unlocked;
+  const useTwoColumns = !editMode && items.length >= 6;
+  const showFilterBar = items.length >= 8;
 
   function moveItem(idx: number, dir: -1 | 1) {
     if (!folder) return;
@@ -83,7 +129,9 @@ export function FolderModal({
       <div
         ref={modalBoxRef}
         data-folder-modal-box={folder.id}
-        className="bento-modal w-full max-w-lg max-h-[84vh] flex flex-col overflow-hidden"
+        className={`bento-modal w-full ${
+          editMode ? 'max-w-lg' : 'max-w-2xl'
+        } max-h-[84vh] flex flex-col overflow-hidden`}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -100,16 +148,18 @@ export function FolderModal({
           </div>
 
           <div className="flex items-center gap-1 shrink-0">
+            {canManage && (
+              <button
+                type="button"
+                onClick={() => onAddItemToFolder(folder.id)}
+                className="inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-medium bg-[var(--accent-orange)] text-white hover:opacity-90 cursor-pointer"
+              >
+                <Plus size={13} />
+                <span>添加项目</span>
+              </button>
+            )}
             {editMode && (
               <>
-                <button
-                  type="button"
-                  onClick={() => onAddItemToFolder(folder.id)}
-                  className="inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-medium bg-[var(--accent-orange)] text-white hover:opacity-90 cursor-pointer"
-                >
-                  <Plus size={13} />
-                  <span>添加项目</span>
-                </button>
                 <button
                   type="button"
                   onClick={() => onEditFolderProps(folder)}
@@ -138,6 +188,31 @@ export function FolderModal({
           </div>
         </div>
 
+        {showFilterBar && (
+          <div className="px-4 py-2 border-b border-[var(--border-hair)] bg-[var(--bg-subtle)]/40">
+            <div className="relative flex items-center rounded-xl bg-[var(--bg-card)] border border-[var(--border-hair)] focus-within:border-[var(--accent-orange)] transition-colors">
+              <Search size={13} className="ml-2.5 text-[var(--ink-muted)] shrink-0" />
+              <input
+                type="text"
+                value={filterQuery}
+                onChange={(e) => setFilterQuery(e.target.value)}
+                placeholder="筛选此文件夹内书签..."
+                className="w-full bg-transparent px-2 py-1.5 text-xs text-[var(--ink-main)] placeholder:text-[var(--ink-muted)] outline-none"
+              />
+              {filterQuery && (
+                <button
+                  type="button"
+                  onClick={() => setFilterQuery('')}
+                  className="mr-1.5 h-5 w-5 rounded-full flex items-center justify-center text-[var(--ink-muted)] hover:bg-[var(--bg-subtle)] cursor-pointer"
+                  aria-label="清空筛选"
+                >
+                  <X size={11} />
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         {editMode && items.length > 0 && (
           <div className="px-5 py-1.5 text-[11px] text-[var(--ink-muted)] bg-[var(--bg-subtle)]/65 border-b border-[var(--border-hair)]">
             提示：按住项目可内部排序；直接拖出弹窗边界即可放回桌面或移至其他文件夹
@@ -147,15 +222,21 @@ export function FolderModal({
         {/* Items List */}
         <div
           style={{ touchAction: 'pan-y' }}
-          className="bento-scroll flex-1 overflow-y-auto p-3 space-y-1.5"
+          className={`bento-scroll flex-1 overflow-y-auto p-3 ${
+            useTwoColumns ? 'grid grid-cols-1 sm:grid-cols-2 gap-2 content-start' : 'space-y-1.5'
+          }`}
         >
           {items.length === 0 ? (
-            <div className="py-12 text-center text-xs text-[var(--ink-muted)]">
+            <div className="col-span-full py-12 text-center text-xs text-[var(--ink-muted)]">
               文件夹还是空的
-              {editMode ? '，点击上方「添加项目」或将桌面书签拖入此文件夹' : ''}
+              {canManage ? '，点击上方「添加项目」或将桌面书签拖入此文件夹' : ''}
+            </div>
+          ) : filteredItems.length === 0 ? (
+            <div className="col-span-full py-12 text-center text-xs text-[var(--ink-muted)]">
+              没有找到匹配 “{filterQuery.trim()}” 的书签
             </div>
           ) : (
-            items.map((item, idx) => {
+            filteredItems.map((item, idx) => {
               const isDragging = draggingItemId === item.id;
               return (
                 <div
@@ -171,7 +252,20 @@ export function FolderModal({
                       modalBoxRef.current?.getBoundingClientRect() ?? null
                     );
                   }}
+                  onContextMenu={
+                    !editMode && unlocked && onOpenContextMenu
+                      ? (e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          onOpenContextMenu(e, { kind: 'item', item, folder });
+                        }
+                      : undefined
+                  }
                   className={`group flex items-center justify-between gap-2 px-3 py-2.5 rounded-2xl transition-colors ${
+                    useTwoColumns
+                      ? 'bg-[var(--bg-subtle)]/45 border border-[var(--border-hair)]/70'
+                      : ''
+                  } ${
                     isDragging
                       ? 'opacity-35 border border-dashed border-[var(--accent-orange)] bg-[var(--bg-subtle)]'
                       : 'hover:bg-[var(--bg-subtle)]'
@@ -240,24 +334,28 @@ export function FolderModal({
                       >
                         <Pencil size={12} />
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => moveItem(idx, -1)}
-                        disabled={idx === 0}
-                        className="h-7 w-7 rounded-lg flex items-center justify-center text-[var(--ink-secondary)] hover:bg-[var(--bg-card)] disabled:opacity-30 cursor-pointer"
-                        title="上移"
-                      >
-                        <ArrowUp size={13} />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => moveItem(idx, 1)}
-                        disabled={idx === items.length - 1}
-                        className="h-7 w-7 rounded-lg flex items-center justify-center text-[var(--ink-secondary)] hover:bg-[var(--bg-card)] disabled:opacity-30 cursor-pointer"
-                        title="下移"
-                      >
-                        <ArrowDown size={13} />
-                      </button>
+                      {!filterQuery.trim() && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => moveItem(idx, -1)}
+                            disabled={idx === 0}
+                            className="h-7 w-7 rounded-lg flex items-center justify-center text-[var(--ink-secondary)] hover:bg-[var(--bg-card)] disabled:opacity-30 cursor-pointer"
+                            title="上移"
+                          >
+                            <ArrowUp size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => moveItem(idx, 1)}
+                            disabled={idx === items.length - 1}
+                            className="h-7 w-7 rounded-lg flex items-center justify-center text-[var(--ink-secondary)] hover:bg-[var(--bg-card)] disabled:opacity-30 cursor-pointer"
+                            title="下移"
+                          >
+                            <ArrowDown size={13} />
+                          </button>
+                        </>
+                      )}
                       <button
                         type="button"
                         onClick={() => onExtractItemToCanvas(item.id)}
@@ -277,14 +375,30 @@ export function FolderModal({
                       </button>
                     </div>
                   ) : (
-                    <a
-                      href={item.url}
-                      target={openTarget}
-                      rel={openTarget === '_blank' ? 'noopener noreferrer' : undefined}
-                      className="h-7 w-7 rounded-full flex items-center justify-center text-[var(--ink-muted)] group-hover:text-[var(--ink-main)]"
-                    >
-                      <ArrowUpRight size={14} />
-                    </a>
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      {unlocked && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            onEditItem(item);
+                          }}
+                          className="h-7 w-7 rounded-full flex items-center justify-center text-[var(--ink-muted)] opacity-0 group-hover:opacity-100 hover:bg-[var(--bg-card)] hover:text-[var(--ink-main)] transition-opacity cursor-pointer"
+                          title="编辑书签"
+                        >
+                          <Pencil size={12} />
+                        </button>
+                      )}
+                      <a
+                        href={item.url}
+                        target={openTarget}
+                        rel={openTarget === '_blank' ? 'noopener noreferrer' : undefined}
+                        className="h-7 w-7 rounded-full flex items-center justify-center text-[var(--ink-muted)] group-hover:text-[var(--ink-main)]"
+                      >
+                        <ArrowUpRight size={14} />
+                      </a>
+                    </div>
                   )}
                 </div>
               );

@@ -1,13 +1,14 @@
-import { useEffect, useState, type FormEvent } from 'react';
-import { Globe, Lock, Sparkles, Trash2, X } from 'lucide-react';
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
+import { Globe, Lock, Sparkles, Trash2, Upload, X } from 'lucide-react';
 import type {
   BookmarkItem,
   FolderContainer,
   FolderDisplayMode,
   SiteSettings,
 } from '../../shared/types';
-import { fetchUrlMeta } from '../api';
-import { ICON_PRESET_NAMES, IconGlyph } from './IconGlyph';
+import { fetchUrlMeta, uploadImageApi } from '../api';
+import { compressImageFileToDataUrl } from '../utils/imageCompress';
+import { clearDeadFavicon, ICON_PRESET_NAMES, IconGlyph } from './IconGlyph';
 
 export type ItemEditorDraft =
   | { mode: 'create-item'; defaultParentId?: string | null; initialPos?: { x: number; y: number } }
@@ -79,11 +80,16 @@ export function ItemEditorModal({
   const [displayMode, setDisplayMode] = useState<FolderDisplayMode>('grid');
   const [isPrivate, setIsPrivate] = useState(false);
   const [fetchingMeta, setFetchingMeta] = useState(false);
+  const [uploadingIcon, setUploadingIcon] = useState(false);
   const [error, setError] = useState('');
+  const autoFetchedUrlRef = useRef('');
+  const iconFileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!draft) return;
     setError('');
+    autoFetchedUrlRef.current = '';
+    setUploadingIcon(false);
     if (draft.mode === 'edit-item') {
       const it = draft.item;
       setTitle(it.title);
@@ -131,15 +137,20 @@ export function ItemEditorModal({
 
   async function handleAutoFetchMeta() {
     if (!url.trim() || url.trim() === 'https://') return;
+    const trimmed = url.trim();
+    autoFetchedUrlRef.current = trimmed;
     setFetchingMeta(true);
     setError('');
     try {
-      const res = await fetchUrlMeta(url.trim());
-      if (!title.trim() && res.title) setTitle(res.title);
-      if (res.faviconUrl) setFaviconUrl(res.faviconUrl);
+      const res = await fetchUrlMeta(trimmed);
+      if (res.title) setTitle((cur) => (cur.trim() ? cur : res.title));
+      if (res.faviconUrl) {
+        clearDeadFavicon(res.faviconUrl);
+        setFaviconUrl(res.faviconUrl);
+      }
       try {
         const host = new URL(res.url).hostname;
-        if (!subtitle.trim()) setSubtitle(host);
+        setSubtitle((cur) => (cur.trim() ? cur : host));
       } catch {
         // ignore
       }
@@ -147,6 +158,65 @@ export function ItemEditorModal({
       setError(err instanceof Error ? err.message : '自动抓取失败');
     } finally {
       setFetchingMeta(false);
+    }
+  }
+
+  async function trySilentAutoFetch(rawUrl: string) {
+    if (isFolder || fetchingMeta) return;
+    const trimmed = rawUrl.trim();
+    if (!trimmed || trimmed === 'https://' || trimmed === 'http://') return;
+    if (title.trim()) return;
+    if (autoFetchedUrlRef.current === trimmed) return;
+
+    let parsed: URL;
+    try {
+      parsed = new URL(trimmed);
+    } catch {
+      return;
+    }
+    if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || !parsed.hostname) {
+      return;
+    }
+
+    autoFetchedUrlRef.current = trimmed;
+    setFetchingMeta(true);
+    try {
+      const res = await fetchUrlMeta(trimmed);
+      if (res.title) {
+        setTitle((cur) => (cur.trim() ? cur : res.title));
+      }
+      if (res.faviconUrl) {
+        clearDeadFavicon(res.faviconUrl);
+        setFaviconUrl((cur) => (cur.trim() ? cur : res.faviconUrl));
+      }
+      try {
+        const host = new URL(res.url).hostname;
+        setSubtitle((cur) => (cur.trim() ? cur : host));
+      } catch {
+        // ignore
+      }
+    } catch {
+      // Silent fail so user input is never interrupted
+    } finally {
+      setFetchingMeta(false);
+    }
+  }
+
+  async function handleIconFileChange(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setUploadingIcon(true);
+    setError('');
+    try {
+      const dataUrl = await compressImageFileToDataUrl(file, 128);
+      const res = await uploadImageApi({ dataUrl });
+      clearDeadFavicon(res.url);
+      setFaviconUrl(res.url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '图标上传失败');
+    } finally {
+      setUploadingIcon(false);
     }
   }
 
@@ -159,6 +229,9 @@ export function ItemEditorModal({
     if (!isFolder && !url.trim()) {
       setError('请填写目标网址');
       return;
+    }
+    if (!isFolder && faviconUrl.trim()) {
+      clearDeadFavicon(faviconUrl.trim());
     }
 
     const tags = tagsInput
@@ -226,6 +299,11 @@ export function ItemEditorModal({
                   type="url"
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
+                  onPaste={(e) => {
+                    const input = e.currentTarget;
+                    window.setTimeout(() => void trySilentAutoFetch(input.value), 0);
+                  }}
+                  onBlur={() => void trySilentAutoFetch(url)}
                   placeholder="https://example.com"
                   className="bento-input flex-1 px-3 py-2 text-sm"
                 />
@@ -288,7 +366,7 @@ export function ItemEditorModal({
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-2.5">
+              <div className="space-y-3">
                 <div>
                   <label className="block text-xs font-medium text-[var(--ink-secondary)] mb-1">
                     图标名称或 Emoji
@@ -303,16 +381,33 @@ export function ItemEditorModal({
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-[var(--ink-secondary)] mb-1">
-                    Favicon URL
+                    Favicon / 自定义图标 URL
                   </label>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5">
                     <input
                       type="text"
                       value={faviconUrl}
                       onChange={(e) => setFaviconUrl(e.target.value)}
                       placeholder="https://.../favicon.ico"
-                      className="bento-input w-full px-3 py-2 text-sm"
+                      className="bento-input flex-1 min-w-0 px-3 py-2 text-sm"
                     />
+                    <input
+                      ref={iconFileRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => void handleIconFileChange(e)}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => iconFileRef.current?.click()}
+                      disabled={uploadingIcon}
+                      title="上传本地自定义图标（自动缩放至 ≤128×128 WebP）"
+                      className="inline-flex h-9 items-center gap-1 rounded-xl px-2.5 text-xs font-medium bg-[var(--bg-subtle)] border border-[var(--border-hair)] hover:border-[var(--border-strong)] cursor-pointer shrink-0 disabled:opacity-50"
+                    >
+                      <Upload size={13} />
+                      <span>{uploadingIcon ? '上传中' : '上传图标'}</span>
+                    </button>
                     <div className="h-9 w-9 rounded-xl bg-[var(--bg-subtle)] border border-[var(--border-hair)] flex items-center justify-center shrink-0">
                       {faviconUrl || icon ? (
                         <IconGlyph

@@ -25,6 +25,8 @@ import {
   isEntityInsideZone,
   rectsOverlap,
   snapQuarter,
+  solveMove,
+  solveMoveZoneGroup,
   solveResize,
 } from '../shared/gridEngine';
 import {
@@ -199,6 +201,7 @@ export default function App() {
   }>({ open: false });
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
   const [modalHiddenForDrag, setModalHiddenForDrag] = useState(false);
+  const [isAnyDragActive, setIsAnyDragActive] = useState(false);
   const [draggingChildId, setDraggingChildId] = useState<string | null>(null);
   const [reorderPreview, setReorderPreview] = useState<{ folderId: string; itemIds: string[] } | null>(null);
   const [editorDraft, setEditorDraft] = useState<ItemEditorDraft | null>(null);
@@ -518,6 +521,18 @@ export default function App() {
     [doc.folders, doc.items, doc.zones, doc.widgets, commitDocState]
   );
 
+  const handleCommitEntitiesAndTexts = useCallback(
+    (nextEntities: CanvasGridEntity[], nextTextWidgets: FreeTextWidget[]) => {
+      const updated = applyEntityLayoutToDoc(doc, nextEntities);
+      const textMap = new Map(nextTextWidgets.map((t) => [t.id, t]));
+      const nextWidgets = (updated.widgets ?? doc.widgets ?? []).map((w) =>
+        w.kind === 'text' ? (textMap.get(w.id) ?? w) : w
+      );
+      void commitDocState(updated.folders, updated.items, true, doc.zones ?? [], nextWidgets);
+    },
+    [doc, commitDocState]
+  );
+
   const handleUndo = useCallback(() => {
     if (undoStack.length === 0) return;
     const prev = undoStack[undoStack.length - 1];
@@ -611,6 +626,34 @@ export default function App() {
     [doc.folders, doc.items, doc.zones, doc.widgets, commitDocState]
   );
 
+  const handleDeleteDraggingEntities = useCallback(
+    (ids: string[]) => {
+      if (ids.length === 0) return;
+      if (ids.length === 1) {
+        const folder = doc.folders.find((f) => f.id === ids[0]);
+        if (folder && doc.items.some((i) => i.parentId === folder.id)) {
+          setDissolveTarget(folder);
+          return;
+        }
+      }
+      handleDeleteEntities(ids);
+      showToast('已删除（可按撤销恢复）');
+    },
+    [doc.folders, doc.items, handleDeleteEntities, showToast]
+  );
+
+  const handleDeleteDraggingChildItem = useCallback(
+    (itemId: string) => {
+      void commitDocState(
+        doc.folders,
+        doc.items.filter((i) => i.id !== itemId),
+        true
+      );
+      showToast('已删除（可按撤销恢复）');
+    },
+    [doc.folders, doc.items, commitDocState, showToast]
+  );
+
   // Global keyboard shortcuts
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -651,12 +694,166 @@ export default function App() {
       if ((e.key === 'Backspace' || e.key === 'Delete') && selectedIds.length > 0) {
         e.preventDefault();
         handleDeleteEntities(selectedIds);
+        return;
+      }
+
+      const isArrow =
+        e.key === 'ArrowLeft' ||
+        e.key === 'ArrowRight' ||
+        e.key === 'ArrowUp' ||
+        e.key === 'ArrowDown';
+      const noModalOpen =
+        !searchOpen &&
+        !activeFolderId &&
+        !editorDraft &&
+        !zwDraft &&
+        !dissolveTarget &&
+        !settingsOpen &&
+        !unlockModal.open &&
+        !contextMenu &&
+        !inlineEditingId;
+
+      if (isArrow && noModalOpen && selectedIds.length > 0) {
+        e.preventDefault();
+        const stepSize = e.shiftKey ? 1 : 0.25;
+        const ndx = e.key === 'ArrowLeft' ? -stepSize : e.key === 'ArrowRight' ? stepSize : 0;
+        const ndy = e.key === 'ArrowUp' ? -stepSize : e.key === 'ArrowDown' ? stepSize : 0;
+        const now = new Date().toISOString();
+
+        if (selectedIds.length === 1) {
+          const zone = (doc.zones ?? []).find((z) => z.id === selectedIds[0]);
+          if (zone) {
+            if (e.altKey) {
+              const nextZones = (doc.zones ?? []).map((z) =>
+                z.id === zone.id
+                  ? {
+                      ...z,
+                      x: snapQuarter(z.x + ndx),
+                      y: snapQuarter(z.y + ndy),
+                      updatedAt: now,
+                    }
+                  : z
+              );
+              handleCommitZones(nextZones);
+              return;
+            }
+            const movingForegroundIds = topLevelEntities
+              .filter((ent) => isEntityInsideZone(ent, zone))
+              .map((ent) => ent.id);
+            const movingTextIds = (doc.widgets ?? [])
+              .filter((w): w is FreeTextWidget => w.kind === 'text' && isEntityInsideZone(w, zone))
+              .map((tw) => tw.id);
+            const res = solveMoveZoneGroup(topLevelEntities, movingForegroundIds, ndx, ndy);
+            if (!res.ok) {
+              showToast(res.message, 'error');
+              return;
+            }
+            const nextZone: ZoneContainer = {
+              ...zone,
+              x: snapQuarter(zone.x + res.dx),
+              y: snapQuarter(zone.y + res.dy),
+              updatedAt: now,
+            };
+            const movingTextSet = new Set(movingTextIds);
+            const nextTextWidgets = (doc.widgets ?? [])
+              .filter((w): w is FreeTextWidget => w.kind === 'text')
+              .map((tw) =>
+                movingTextSet.has(tw.id)
+                  ? {
+                      ...tw,
+                      x: snapQuarter(tw.x + res.dx),
+                      y: snapQuarter(tw.y + res.dy),
+                      updatedAt: now,
+                    }
+                  : tw
+              );
+            handleCommitZoneGroup(nextZone, res.entities, nextTextWidgets);
+            return;
+          }
+        }
+
+        const entityIdSet = new Set(topLevelEntities.map((ent) => ent.id));
+        const textList = (doc.widgets ?? []).filter(
+          (w): w is FreeTextWidget => w.kind === 'text'
+        );
+        const textIdSet = new Set(textList.map((tw) => tw.id));
+        const movingEntityIds = selectedIds.filter((id) => entityIdSet.has(id));
+        const movingTextIds = selectedIds.filter((id) => textIdSet.has(id));
+
+        if (movingEntityIds.length > 0) {
+          const res = solveMove(topLevelEntities, movingEntityIds, ndx, ndy);
+          if (!res.ok) {
+            showToast(res.message, 'error');
+            return;
+          }
+          let actualDx = ndx;
+          let actualDy = ndy;
+          const firstOrig = topLevelEntities.find((ent) => ent.id === movingEntityIds[0]);
+          const firstMoved = res.entities.find((ent) => ent.id === movingEntityIds[0]);
+          if (firstOrig && firstMoved) {
+            actualDx = snapQuarter(firstMoved.x - firstOrig.x);
+            actualDy = snapQuarter(firstMoved.y - firstOrig.y);
+          }
+          if (movingTextIds.length > 0) {
+            const movingTextSet = new Set(movingTextIds);
+            const nextTextWidgets = textList.map((tw) =>
+              movingTextSet.has(tw.id)
+                ? {
+                    ...tw,
+                    x: snapQuarter(tw.x + actualDx),
+                    y: snapQuarter(tw.y + actualDy),
+                    updatedAt: now,
+                  }
+                : tw
+            );
+            handleCommitEntitiesAndTexts(res.entities, nextTextWidgets);
+          } else {
+            handleCommitLayout(res.entities);
+          }
+        } else if (movingTextIds.length > 0) {
+          const movingTextSet = new Set(movingTextIds);
+          const nextTextWidgets = textList.map((tw) =>
+            movingTextSet.has(tw.id)
+              ? {
+                  ...tw,
+                  x: snapQuarter(tw.x + ndx),
+                  y: snapQuarter(tw.y + ndy),
+                  updatedAt: now,
+                }
+              : tw
+          );
+          handleCommitTextWidgets(nextTextWidgets);
+        }
       }
     }
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [editMode, selectedIds, handleUndo, handleRedo, handleDeleteEntities]);
+  }, [
+    editMode,
+    selectedIds,
+    searchOpen,
+    activeFolderId,
+    editorDraft,
+    zwDraft,
+    dissolveTarget,
+    settingsOpen,
+    unlockModal.open,
+    contextMenu,
+    inlineEditingId,
+    doc.zones,
+    doc.widgets,
+    topLevelEntities,
+    handleUndo,
+    handleRedo,
+    handleDeleteEntities,
+    handleCommitLayout,
+    handleCommitZones,
+    handleCommitZoneGroup,
+    handleCommitTextWidgets,
+    handleCommitEntitiesAndTexts,
+    showToast,
+  ]);
 
   async function handleLockToggle() {
     if (unlocked) {
@@ -1073,11 +1270,11 @@ export default function App() {
     showToast(nextPrivate ? `已将「${folder.title}」设为私密` : `已将「${folder.title}」设为公开`);
   }
 
-  const handleFocusFolder = useCallback(
-    (folder: FolderContainer) => {
+  const flyToWorldRect = useCallback(
+    (rect: { x: number; y: number; w: number; h: number }, highlightId?: string) => {
       const step = doc.grid.cellSize + doc.grid.gap;
-      const cx = folder.x * step + (folder.w * doc.grid.cellSize + (folder.w - 1) * doc.grid.gap) / 2;
-      const cy = folder.y * step + (folder.h * doc.grid.cellSize + (folder.h - 1) * doc.grid.gap) / 2;
+      const cx = rect.x * step + (rect.w * doc.grid.cellSize + Math.max(0, rect.w - 1) * doc.grid.gap) / 2;
+      const cy = rect.y * step + (rect.h * doc.grid.cellSize + Math.max(0, rect.h - 1) * doc.grid.gap) / 2;
       const targetScale = Math.max(0.85, Math.min(1.05, view.scale));
       if (flyTimerRef.current !== null) {
         window.clearTimeout(flyTimerRef.current);
@@ -1092,8 +1289,32 @@ export default function App() {
         flyTimerRef.current = null;
         setFlyTransition(false);
       }, 360);
+      if (highlightId) {
+        if (newlyCreatedTimerRef.current !== null) {
+          window.clearTimeout(newlyCreatedTimerRef.current);
+        }
+        setNewlyCreatedId(highlightId);
+        newlyCreatedTimerRef.current = window.setTimeout(() => {
+          newlyCreatedTimerRef.current = null;
+          setNewlyCreatedId((cur) => (cur === highlightId ? null : cur));
+        }, 1600);
+      }
     },
     [doc.grid.cellSize, doc.grid.gap, view.scale]
+  );
+
+  const handleFocusFolder = useCallback(
+    (folder: FolderContainer) => {
+      flyToWorldRect(folder, folder.id);
+    },
+    [flyToWorldRect]
+  );
+
+  const handleFocusZone = useCallback(
+    (zone: ZoneContainer) => {
+      flyToWorldRect(zone, zone.id);
+    },
+    [flyToWorldRect]
   );
 
   const handleCopyUrl = useCallback(
@@ -1773,6 +1994,53 @@ export default function App() {
     );
   }
 
+  function handleMobileSaveNote(payload: {
+    id?: string;
+    title: string;
+    content: string;
+    tint?: string;
+    isPrivate?: boolean;
+  }) {
+    const now = new Date().toISOString();
+    const curWidgets = doc.widgets ?? [];
+    if (payload.id) {
+      const nextWidgets = curWidgets.map((w) =>
+        w.kind === 'note' && w.id === payload.id
+          ? {
+              ...w,
+              title: payload.title,
+              content: payload.content,
+              tint: payload.tint,
+              isPrivate: Boolean(payload.isPrivate),
+              updatedAt: now,
+            }
+          : w
+      );
+      void commitDocState(doc.folders, doc.items, true, doc.zones ?? [], nextWidgets);
+      showToast('已保存便签');
+      return;
+    }
+
+    const anchor = worldPosToGrid(undefined, undefined, 2, 2);
+    const slot = placeNearAnchor(2, 2, anchor);
+    const newNote: NoteWidget = {
+      id: `note-${crypto.randomUUID().slice(0, 8)}`,
+      kind: 'note',
+      title: payload.title,
+      content: payload.content,
+      tint: payload.tint,
+      isPrivate: Boolean(payload.isPrivate),
+      x: slot.x,
+      y: slot.y,
+      w: 2,
+      h: 2,
+      createdAt: now,
+      updatedAt: now,
+    };
+    void commitDocState(doc.folders, doc.items, true, doc.zones ?? [], [...curWidgets, newNote]);
+    showToast('已新建便签');
+  }
+
   function handleSaveZoneWidget(payload: ZoneWidgetSavePayload): string | null {
     if (!zwDraft) return null;
     const now = new Date().toISOString();
@@ -2034,6 +2302,11 @@ export default function App() {
     return null;
   }, [selectedIds, topLevelEntities, doc.zones, doc.widgets]);
 
+  const visibleNotes = useMemo(
+    () => (doc.widgets ?? []).filter((w): w is NoteWidget => w.kind === 'note'),
+    [doc.widgets]
+  );
+
   return (
     <div className="relative w-full h-full overflow-hidden">
       <TopLoadBar />
@@ -2068,12 +2341,19 @@ export default function App() {
               settings={settings}
               folders={doc.folders}
               items={doc.items}
+              notes={visibleNotes}
               loading={loading}
               unlocked={unlocked}
               hasPrivateHidden={hasPrivateHidden}
               dark={dark}
               onToggleDark={toggleDark}
               onLockToggle={() => void handleLockToggle()}
+              onRequestUnlock={(reason) =>
+                setUnlockModal({
+                  open: true,
+                  reason: reason || '请输入管理密码解锁后操作',
+                })
+              }
               onSwitchToCanvas={() => handleSwitchMobileView('canvas')}
               onOpenSettings={() => setSettingsOpen(true)}
               onCreateItem={(defaultParentId) =>
@@ -2081,6 +2361,8 @@ export default function App() {
               }
               onEditItem={(item) => setEditorDraft({ mode: 'edit-item', item })}
               onEditFolder={(folder) => setEditorDraft({ mode: 'edit-folder', folder })}
+              onSaveNote={handleMobileSaveNote}
+              onDeleteNote={handleDeleteWidget}
             />
           ) : (
             <>
@@ -2129,6 +2411,10 @@ export default function App() {
                   onCommitZones={handleCommitZones}
                   onCommitZoneGroup={handleCommitZoneGroup}
                   onCommitTextWidgets={handleCommitTextWidgets}
+                  onCommitEntitiesAndTexts={handleCommitEntitiesAndTexts}
+                  onDeleteDraggingEntities={handleDeleteDraggingEntities}
+                  onDeleteDraggingChildItem={handleDeleteDraggingChildItem}
+                  onDraggingActiveChange={setIsAnyDragActive}
                   onMoveItemsToFolder={handleMoveItemsToFolder}
                   onMergeItemsToFolder={handleMergeItemsToFolder}
                   onDropChildToCanvas={handleDropChildToCanvas}
@@ -2163,8 +2449,10 @@ export default function App() {
                 <FolderNavBar
                   folders={doc.folders}
                   items={doc.items}
+                  zones={doc.zones ?? []}
                   editMode={editMode}
                   onFocusFolder={handleFocusFolder}
+                  onFocusZone={handleFocusZone}
                   onOpenFolder={(folder) => setActiveFolderId(folder.id)}
                 />
               )}
@@ -2180,7 +2468,7 @@ export default function App() {
                 />
               )}
 
-              {editMode && (
+              {editMode && !isAnyDragActive && (
                 <EditDock
                   selectedCount={selectedIds.length}
                   selectedItemCount={selectedItemCount}
@@ -2251,10 +2539,15 @@ export default function App() {
                 folder={activeFolder}
                 items={activeFolderItems}
                 editMode={editMode}
+                unlocked={unlocked}
+                blockEscapeClose={Boolean(editorDraft || contextMenu)}
                 openTarget={settings.openTarget}
                 hiddenForDrag={modalHiddenForDrag}
                 draggingItemId={draggingChildId}
                 onClose={() => setActiveFolderId(null)}
+                onOpenContextMenu={(e, target) =>
+                  setContextMenu({ x: e.clientX, y: e.clientY, target })
+                }
                 onEditFolderProps={(folder) => setEditorDraft({ mode: 'edit-folder', folder })}
                 onRequestDeleteFolder={handleRequestDeleteFolder}
                 onAddItemToFolder={(folderId) =>
@@ -2321,9 +2614,12 @@ export default function App() {
                 open={searchOpen}
                 folders={doc.folders}
                 items={doc.items}
+                zones={doc.zones ?? []}
+                widgets={doc.widgets ?? []}
                 openTarget={settings.openTarget}
                 onClose={() => setSearchOpen(false)}
                 onOpenFolder={(folder) => setActiveFolderId(folder.id)}
+                onFocusRect={(rect, id) => flyToWorldRect(rect, id)}
               />
             )}
 

@@ -8,7 +8,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
-import { Crosshair } from 'lucide-react';
+import { Crosshair, Trash2 } from 'lucide-react';
 import type {
   BookmarkItem,
   CanvasGridEntity,
@@ -73,6 +73,13 @@ interface InfiniteCanvasProps {
     nextTextWidgets: FreeTextWidget[]
   ) => void;
   onCommitTextWidgets: (nextTextWidgets: FreeTextWidget[]) => void;
+  onCommitEntitiesAndTexts?: (
+    nextEntities: CanvasGridEntity[],
+    nextTextWidgets: FreeTextWidget[]
+  ) => void;
+  onDeleteDraggingEntities?: (ids: string[]) => void;
+  onDeleteDraggingChildItem?: (itemId: string) => void;
+  onDraggingActiveChange?: (active: boolean) => void;
   onMoveItemsToFolder: (itemIds: string[], folderId: string) => void;
   onMergeItemsToFolder: (sourceItemId: string, targetItemId: string) => void;
   onDropChildToCanvas: (
@@ -127,6 +134,7 @@ interface ResizeState {
 
 interface DragState {
   movingIds: string[];
+  movingTextIds: string[];
   allItemsOnly: boolean;
   singleItemId: string | null;
   startX: number;
@@ -137,6 +145,8 @@ interface DragState {
   lifted: boolean;
   dx: number;
   dy: number;
+  effDx: number;
+  effDy: number;
   previewEntities: CanvasGridEntity[] | null;
   swappedIds: Set<string>;
   dropFolderId: string | null;
@@ -261,6 +271,10 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
       onCommitZones,
       onCommitZoneGroup,
       onCommitTextWidgets,
+      onCommitEntitiesAndTexts,
+      onDeleteDraggingEntities,
+      onDeleteDraggingChildItem,
+      onDraggingActiveChange,
       onMoveItemsToFolder,
       onMergeItemsToFolder,
       onDropChildToCanvas,
@@ -345,6 +359,33 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
     const [pendingTouchActive, setPendingTouchActive] = useState(false);
     const [spacePressed, setSpacePressed] = useState(false);
     const spacePressedRef = useRef(false);
+    const trashRef = useRef<HTMLDivElement>(null);
+    const [overTrash, setOverTrash] = useState(false);
+
+    const isAnyDragStarted =
+      editMode &&
+      Boolean(
+        dragState?.started ||
+          childDrag?.started ||
+          zoneDrag?.started ||
+          textDrag?.started
+      );
+
+    useEffect(() => {
+      onDraggingActiveChange?.(isAnyDragStarted);
+    }, [isAnyDragStarted, onDraggingActiveChange]);
+
+    const isPointOverTrash = useCallback((clientX: number, clientY: number): boolean => {
+      const rect = trashRef.current?.getBoundingClientRect();
+      if (!rect) return false;
+      const pad = 10;
+      return (
+        clientX >= rect.left - pad &&
+        clientX <= rect.right + pad &&
+        clientY >= rect.top - pad &&
+        clientY <= rect.bottom + pad
+      );
+    }, []);
 
     useEffect(() => {
       function onKeyDown(e: KeyboardEvent) {
@@ -814,6 +855,8 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
           onDraggingChildIdChange(cd.item.id);
         }
 
+        setOverTrash(isPointOverTrash(e.clientX, e.clientY));
+
         cd.currX = e.clientX;
         cd.currY = e.clientY;
 
@@ -1021,6 +1064,9 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
         const cd = childDragRef.current;
         if (!cd) return;
 
+        const droppedOnTrash = cd.started && isPointOverTrash(e.clientX, e.clientY);
+        setOverTrash(false);
+
         const readyMergeId = mergeReadyRef.current;
         clearHoverMerge();
 
@@ -1035,6 +1081,18 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
         window.setTimeout(() => {
           suppressClickRef.current = false;
         }, 80);
+
+        if (droppedOnTrash) {
+          onDeleteDraggingChildItem?.(cd.item.id);
+          onPreviewReorderChange(null);
+          onDraggingChildIdChange(null);
+          if (cd.source === 'modal') {
+            onModalHiddenForDragChange(false);
+            onCloseFolderModal();
+          }
+          setChildDrag(null);
+          return;
+        }
 
         if (!cd.exitedSource) {
           if (cd.reorderedIds) {
@@ -1314,6 +1372,7 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
         const dist = Math.hypot(e.clientX - zoneDrag.startX, e.clientY - zoneDrag.startY);
         const started = zoneDrag.started || dist > 5;
         if (!started) return;
+        setOverTrash(isPointOverTrash(e.clientX, e.clientY));
         if (!zoneDrag.started) {
           try {
             containerRef.current?.setPointerCapture(e.pointerId);
@@ -1417,6 +1476,7 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
         const dist = Math.hypot(e.clientX - textDrag.startX, e.clientY - textDrag.startY);
         const started = textDrag.started || dist > 5;
         if (!started) return;
+        setOverTrash(isPointOverTrash(e.clientX, e.clientY));
         if (!textDrag.started) {
           try {
             containerRef.current?.setPointerCapture(e.pointerId);
@@ -1489,6 +1549,7 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
         const dist = Math.hypot(e.clientX - dragState.startX, e.clientY - dragState.startY);
         const started = dragState.started || dist > 5;
         if (!started) return;
+        setOverTrash(isPointOverTrash(e.clientX, e.clientY));
         if (!dragState.started) {
           try {
             containerRef.current?.setPointerCapture(e.pointerId);
@@ -1513,6 +1574,14 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
               cardEl.style.transform = `translate3d(${dxPx}px, ${dyPx}px, 0)${suffix}`;
             }
           }
+          for (const tid of dragState.movingTextIds) {
+            const tEl = containerRef.current.querySelector<HTMLElement>(
+              `[data-text-id="${CSS.escape(tid)}"]`
+            );
+            if (tEl) {
+              tEl.style.transform = `translate3d(${dxPx}px, ${dyPx}px, 0)`;
+            }
+          }
         }
 
         const dx = snapQuarter((e.clientX - dragState.startX) / (step * viewScale));
@@ -1534,6 +1603,8 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
               started: true,
               dx,
               dy,
+              effDx: 0,
+              effDy: 0,
               previewEntities: null,
               swappedIds: new Set(),
               dropFolderId: targetFolder.id,
@@ -1565,6 +1636,8 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
                 started: true,
                 dx,
                 dy,
+                effDx: 0,
+                effDy: 0,
                 previewEntities: null,
                 swappedIds: new Set(),
                 dropFolderId: null,
@@ -1607,6 +1680,17 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
           }
         }
         if (res.ok) {
+          let actualDx = effDx;
+          let actualDy = effDy;
+          if (dragState.movingIds.length > 0) {
+            const firstId = dragState.movingIds[0];
+            const orig = entities.find((item) => item.id === firstId);
+            const moved = res.entities.find((item) => item.id === firstId);
+            if (orig && moved) {
+              actualDx = snapQuarter(moved.x - orig.x);
+              actualDy = snapQuarter(moved.y - orig.y);
+            }
+          }
           setDragState({
             ...dragState,
             currX: e.clientX,
@@ -1614,6 +1698,8 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
             started: true,
             dx,
             dy,
+            effDx: actualDx,
+            effDy: actualDy,
             previewEntities: res.entities,
             swappedIds: new Set(res.swappedIds),
             dropFolderId: null,
@@ -1631,6 +1717,8 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
             started: true,
             dx,
             dy,
+            effDx: dx,
+            effDy: dy,
             previewEntities: errorPreview,
             swappedIds: new Set(),
             dropFolderId: null,
@@ -1723,6 +1811,8 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
 
     function handleCanvasPointerUp(e: ReactPointerEvent<HTMLDivElement>) {
       containerRectRef.current = null;
+      const droppedOnTrash = isPointOverTrash(e.clientX, e.clientY);
+      setOverTrash(false);
       const wasPinching = Boolean(pinchRef.current?.active);
       pointersRef.current.delete(e.pointerId);
       cancelTouchLongPress();
@@ -1823,7 +1913,9 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
 
       if (zoneDrag) {
         if (zoneDrag.started) {
-          if (zoneDrag.errorMsg) {
+          if (droppedOnTrash && onDeleteDraggingEntities) {
+            onDeleteDraggingEntities([zoneDrag.zone.id]);
+          } else if (zoneDrag.errorMsg) {
             onStatusToast(zoneDrag.errorMsg, 'error');
           } else if (zoneDrag.dx !== 0 || zoneDrag.dy !== 0) {
             const now = new Date().toISOString();
@@ -1875,22 +1967,26 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
       }
 
       if (textDrag) {
-        if (textDrag.started && (textDrag.dx !== 0 || textDrag.dy !== 0)) {
-          const now = new Date().toISOString();
-          onCommitTextWidgets(
-            widgets
-              .filter((w): w is FreeTextWidget => w.kind === 'text')
-              .map((item) =>
-                item.id === textDrag.widget.id
-                  ? {
-                      ...item,
-                      x: snapQuarter(item.x + textDrag.dx),
-                      y: snapQuarter(item.y + textDrag.dy),
-                      updatedAt: now,
-                    }
-                  : item
-              )
-          );
+        if (textDrag.started) {
+          if (droppedOnTrash && onDeleteDraggingEntities) {
+            onDeleteDraggingEntities([textDrag.widget.id]);
+          } else if (textDrag.dx !== 0 || textDrag.dy !== 0) {
+            const now = new Date().toISOString();
+            onCommitTextWidgets(
+              widgets
+                .filter((w): w is FreeTextWidget => w.kind === 'text')
+                .map((item) =>
+                  item.id === textDrag.widget.id
+                    ? {
+                        ...item,
+                        x: snapQuarter(item.x + textDrag.dx),
+                        y: snapQuarter(item.y + textDrag.dy),
+                        updatedAt: now,
+                      }
+                    : item
+                )
+            );
+          }
         }
         setTextDrag(null);
         return;
@@ -1913,7 +2009,9 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
         const readyMergeTarget = mergeReadyRef.current;
         clearHoverMerge();
 
-        if (readyMergeTarget && dragState.singleItemId) {
+        if (dragState.started && droppedOnTrash && onDeleteDraggingEntities) {
+          onDeleteDraggingEntities([...dragState.movingIds, ...dragState.movingTextIds]);
+        } else if (readyMergeTarget && dragState.singleItemId) {
           onMergeItemsToFolder(dragState.singleItemId, readyMergeTarget);
         } else if (dragState.dropFolderId && dragState.allItemsOnly) {
           onMoveItemsToFolder(dragState.movingIds, dragState.dropFolderId);
@@ -1921,8 +2019,43 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
         } else if (dragState.started) {
           if (dragState.errorMsg) {
             onStatusToast(dragState.errorMsg, 'error');
-          } else if (dragState.previewEntities && (dragState.dx !== 0 || dragState.dy !== 0)) {
-            onCommitLayout(dragState.previewEntities);
+          } else {
+            const hasEntitiesMoved =
+              dragState.movingIds.length > 0 &&
+              Boolean(dragState.previewEntities) &&
+              (dragState.effDx !== 0 || dragState.effDy !== 0 || dragState.dx !== 0 || dragState.dy !== 0);
+            const hasTextsMoved =
+              dragState.movingTextIds.length > 0 &&
+              (dragState.effDx !== 0 || dragState.effDy !== 0);
+
+            if (dragState.movingTextIds.length > 0 && (hasEntitiesMoved || hasTextsMoved)) {
+              const now = new Date().toISOString();
+              const movingTextSet = new Set(dragState.movingTextIds);
+              const nextTextWidgets = widgets
+                .filter((w): w is FreeTextWidget => w.kind === 'text')
+                .map((tw) =>
+                  movingTextSet.has(tw.id)
+                    ? {
+                        ...tw,
+                        x: snapQuarter(tw.x + dragState.effDx),
+                        y: snapQuarter(tw.y + dragState.effDy),
+                        updatedAt: now,
+                      }
+                    : tw
+                );
+              const nextEntities =
+                hasEntitiesMoved && dragState.previewEntities ? dragState.previewEntities : entities;
+              if (onCommitEntitiesAndTexts) {
+                onCommitEntitiesAndTexts(nextEntities, nextTextWidgets);
+              } else {
+                if (hasEntitiesMoved && dragState.previewEntities) {
+                  onCommitLayout(dragState.previewEntities);
+                }
+                onCommitTextWidgets(nextTextWidgets);
+              }
+            } else if (hasEntitiesMoved && dragState.previewEntities) {
+              onCommitLayout(dragState.previewEntities);
+            }
           }
         }
         setDragState(null);
@@ -1937,6 +2070,7 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
       cacheContainerRect();
 
       const entityMap = new Map(entities.map((it) => [it.id, it]));
+      const textIdSet = new Set(widgets.filter((w) => w.kind === 'text').map((w) => w.id));
 
       if (e.pointerType === 'touch' || e.pointerType === 'pen') {
         // Never intercept touch move immediately — 380ms long-press enables drag while swipes pan cleanly!
@@ -1957,14 +2091,22 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
           } catch {
             // ignore
           }
-          const movingList = nextSelected
+          const movingEntityIds = nextSelected.filter((id) => entityMap.has(id));
+          const movingTextIds = nextSelected.filter((id) => textIdSet.has(id));
+          const movingList = movingEntityIds
             .map((id) => entityMap.get(id))
             .filter((x): x is CanvasGridEntity => Boolean(x));
-          const allItemsOnly = movingList.length > 0 && movingList.every((m) => m.kind === 'item');
+          const allItemsOnly =
+            movingList.length > 0 &&
+            movingTextIds.length === 0 &&
+            movingList.every((m) => m.kind === 'item');
           const singleItemId =
-            movingList.length === 1 && movingList[0].kind === 'item' ? movingList[0].id : null;
+            movingList.length === 1 && movingTextIds.length === 0 && movingList[0].kind === 'item'
+              ? movingList[0].id
+              : null;
           setDragState({
-            movingIds: nextSelected,
+            movingIds: movingEntityIds,
+            movingTextIds,
             allItemsOnly,
             singleItemId,
             startX,
@@ -1975,6 +2117,8 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
             lifted: true,
             dx: 0,
             dy: 0,
+            effDx: 0,
+            effDy: 0,
             previewEntities: null,
             swappedIds: new Set(),
             dropFolderId: null,
@@ -2014,15 +2158,23 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
 
       onSelectIds(nextSelected);
 
-      const movingList = nextSelected
+      const movingEntityIds = nextSelected.filter((id) => entityMap.has(id));
+      const movingTextIds = nextSelected.filter((id) => textIdSet.has(id));
+      const movingList = movingEntityIds
         .map((id) => entityMap.get(id))
         .filter((x): x is CanvasGridEntity => Boolean(x));
-      const allItemsOnly = movingList.length > 0 && movingList.every((m) => m.kind === 'item');
+      const allItemsOnly =
+        movingList.length > 0 &&
+        movingTextIds.length === 0 &&
+        movingList.every((m) => m.kind === 'item');
       const singleItemId =
-        movingList.length === 1 && movingList[0].kind === 'item' ? movingList[0].id : null;
+        movingList.length === 1 && movingTextIds.length === 0 && movingList[0].kind === 'item'
+          ? movingList[0].id
+          : null;
 
       setDragState({
-        movingIds: nextSelected,
+        movingIds: movingEntityIds,
+        movingTextIds,
         allItemsOnly,
         singleItemId,
         startX: e.clientX,
@@ -2033,6 +2185,8 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
         lifted: false,
         dx: 0,
         dy: 0,
+        effDx: 0,
+        effDy: 0,
         previewEntities: null,
         swappedIds: new Set(),
         dropFolderId: null,
@@ -2135,6 +2289,36 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
         return;
       }
 
+      if (selectedIds.includes(widget.id) && selectedIds.length > 1) {
+        const entityIdSet = new Set(entities.map((it) => it.id));
+        const textIdSet = new Set(widgets.filter((w) => w.kind === 'text').map((w) => w.id));
+        const movingEntityIds = selectedIds.filter((id) => entityIdSet.has(id));
+        const movingTextIds = selectedIds.filter((id) => textIdSet.has(id));
+        if (movingEntityIds.length > 0 || movingTextIds.length > 1) {
+          setDragState({
+            movingIds: movingEntityIds,
+            movingTextIds,
+            allItemsOnly: false,
+            singleItemId: null,
+            startX: e.clientX,
+            startY: e.clientY,
+            currX: e.clientX,
+            currY: e.clientY,
+            started: false,
+            lifted: false,
+            dx: 0,
+            dy: 0,
+            effDx: 0,
+            effDy: 0,
+            previewEntities: null,
+            swappedIds: new Set(),
+            dropFolderId: null,
+            errorMsg: null,
+          });
+          return;
+        }
+      }
+
       onSelectIds([widget.id]);
       setTextDrag({
         widget,
@@ -2191,14 +2375,17 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
       : baseRenderedEntities;
 
     const dragSlotPreviews =
+      !overTrash &&
       dragState?.started &&
       dragState.previewEntities &&
       !dragState.dropFolderId &&
       !mergeReadyTargetId
         ? dragState.previewEntities.filter((e) => activeDragMovingSet?.has(e.id))
-        : zoneDrag?.started && zoneDrag.previewEntities
+        : !overTrash && zoneDrag?.started && zoneDrag.previewEntities
           ? zoneDrag.previewEntities.filter((e) => activeDragMovingSet?.has(e.id))
           : [];
+
+    const activeDragMovingTextSet = dragState?.started ? new Set(dragState.movingTextIds) : null;
 
     const activeDragOffset = dragState?.started
       ? {
@@ -2244,6 +2431,142 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
     const activeErrorMsg =
       resizeState?.errorMsg ?? dragState?.errorMsg ?? childDrag?.errorMsg ?? zoneDrag?.errorMsg ?? null;
     const dotStep = Math.max(14, (step / 4) * scale);
+
+    // Snap alignment guides (1 vertical + 1 horizontal within < 1 world px during active drag)
+    const alignGuides = (() => {
+      if (overTrash) return null;
+      const isDragGuide =
+        (dragState?.started && !dragState.dropFolderId && !mergeReadyTargetId) ||
+        Boolean(zoneDrag?.started) ||
+        Boolean(textDrag?.started);
+      if (!isDragGuide) return null;
+
+      type PixelBox = {
+        left: number;
+        top: number;
+        right: number;
+        bottom: number;
+        cx: number;
+        cy: number;
+      };
+      const toBox = (x: number, y: number, w: number, h: number): PixelBox => {
+        const left = x * step;
+        const top = y * step;
+        const wPx = w * grid.cellSize + Math.max(0, w - 1) * grid.gap;
+        const hPx = h * grid.cellSize + Math.max(0, h - 1) * grid.gap;
+        return {
+          left,
+          top,
+          right: left + wPx,
+          bottom: top + hPx,
+          cx: left + wPx / 2,
+          cy: top + hPx / 2,
+        };
+      };
+
+      const movingBoxes: PixelBox[] = [];
+      const excluded = new Set<string>();
+
+      if (dragState?.started && !dragState.dropFolderId && !mergeReadyTargetId) {
+        const movingEntSet = new Set(dragState.movingIds);
+        const movingTxtSet = new Set(dragState.movingTextIds);
+        for (const id of movingEntSet) excluded.add(id);
+        for (const id of movingTxtSet) excluded.add(id);
+        for (const ent of dragState.previewEntities ?? entities) {
+          if (movingEntSet.has(ent.id)) {
+            movingBoxes.push(toBox(ent.x, ent.y, ent.w, ent.h));
+          }
+        }
+        for (const tw of textWidgets) {
+          if (movingTxtSet.has(tw.id)) {
+            movingBoxes.push(
+              toBox(
+                snapQuarter(tw.x + dragState.effDx),
+                snapQuarter(tw.y + dragState.effDy),
+                tw.w,
+                tw.h
+              )
+            );
+          }
+        }
+      } else if (zoneDrag?.started) {
+        excluded.add(zoneDrag.zone.id);
+        for (const id of zoneDrag.movingForegroundIds) excluded.add(id);
+        for (const id of zoneDrag.movingTextIds) excluded.add(id);
+        movingBoxes.push(
+          toBox(
+            snapQuarter(zoneDrag.zone.x + zoneDrag.dx),
+            snapQuarter(zoneDrag.zone.y + zoneDrag.dy),
+            zoneDrag.zone.w,
+            zoneDrag.zone.h
+          )
+        );
+      } else if (textDrag?.started) {
+        excluded.add(textDrag.widget.id);
+        movingBoxes.push(
+          toBox(
+            snapQuarter(textDrag.widget.x + textDrag.dx),
+            snapQuarter(textDrag.widget.y + textDrag.dy),
+            textDrag.widget.w,
+            textDrag.widget.h
+          )
+        );
+      }
+
+      if (movingBoxes.length === 0) return null;
+
+      const refBoxes: PixelBox[] = [];
+      for (const ent of entities) {
+        if (!excluded.has(ent.id)) refBoxes.push(toBox(ent.x, ent.y, ent.w, ent.h));
+      }
+      for (const z of zones) {
+        if (!excluded.has(z.id)) refBoxes.push(toBox(z.x, z.y, z.w, z.h));
+      }
+      for (const tw of textWidgets) {
+        if (!excluded.has(tw.id)) refBoxes.push(toBox(tw.x, tw.y, tw.w, tw.h));
+      }
+
+      let bestV: { x: number; y1: number; y2: number; dist: number } | null = null;
+      let bestH: { y: number; x1: number; x2: number; dist: number } | null = null;
+
+      for (const m of movingBoxes) {
+        const mXs = [m.left, m.cx, m.right];
+        const mYs = [m.top, m.cy, m.bottom];
+        for (const r of refBoxes) {
+          const rXs = [r.left, r.cx, r.right];
+          for (const mx of mXs) {
+            for (const rx of rXs) {
+              const dist = Math.abs(mx - rx);
+              if (dist < 1 && (!bestV || dist < bestV.dist)) {
+                bestV = {
+                  x: rx,
+                  y1: Math.min(m.top, r.top) - 16,
+                  y2: Math.max(m.bottom, r.bottom) + 16,
+                  dist,
+                };
+              }
+            }
+          }
+          const rYs = [r.top, r.cy, r.bottom];
+          for (const my of mYs) {
+            for (const ry of rYs) {
+              const dist = Math.abs(my - ry);
+              if (dist < 1 && (!bestH || dist < bestH.dist)) {
+                bestH = {
+                  y: ry,
+                  x1: Math.min(m.left, r.left) - 16,
+                  x2: Math.max(m.right, r.right) + 16,
+                  dist,
+                };
+              }
+            }
+          }
+        }
+      }
+
+      if (!bestV && !bestH) return null;
+      return { v: bestV, h: bestH };
+    })();
 
     // Precompute folder items map (respecting live reorder preview during child drag)
     const folderItemsMap = new Map<string, BookmarkItem[]>();
@@ -2380,7 +2703,7 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
           })}
 
           {/* Landing slot preview when dragging an item out of a folder onto canvas */}
-          {childDrag?.exitedSource && childDrag.targetGrid && !childDrag.targetFolderId && !mergeReadyTargetId && (
+          {!overTrash && childDrag?.exitedSource && childDrag.targetGrid && !childDrag.targetFolderId && !mergeReadyTargetId && (
             <div
               style={{
                 position: 'absolute',
@@ -2484,13 +2807,16 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
           {textWidgets.map((tw) => {
             const isTextMoving =
               (textDrag?.started && textDrag.widget.id === tw.id) ||
-              Boolean(zoneMovingTextSet?.has(tw.id));
+              Boolean(zoneMovingTextSet?.has(tw.id)) ||
+              Boolean(activeDragMovingTextSet?.has(tw.id));
             const offset =
               textDrag?.started && textDrag.widget.id === tw.id
                 ? textOnlyDragOffset
                 : zoneMovingTextSet?.has(tw.id)
                   ? zoneOnlyDragOffset
-                  : null;
+                  : activeDragMovingTextSet?.has(tw.id)
+                    ? activeDragOffset
+                    : null;
             return (
               <FreeTextCard
                 key={tw.id}
@@ -2625,6 +2951,36 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
               </div>
             );
           })()}
+
+          {/* Snap Alignment Guides (zIndex: 38) */}
+          {alignGuides?.v && (
+            <div
+              className="pointer-events-none"
+              style={{
+                position: 'absolute',
+                left: alignGuides.v.x,
+                top: alignGuides.v.y1,
+                width: 0,
+                height: alignGuides.v.y2 - alignGuides.v.y1,
+                borderLeft: '1px dashed var(--accent-orange)',
+                zIndex: 38,
+              }}
+            />
+          )}
+          {alignGuides?.h && (
+            <div
+              className="pointer-events-none"
+              style={{
+                position: 'absolute',
+                left: alignGuides.h.x1,
+                top: alignGuides.h.y,
+                width: alignGuides.h.x2 - alignGuides.h.x1,
+                height: 0,
+                borderTop: '1px dashed var(--accent-orange)',
+                zIndex: 38,
+              }}
+            />
+          )}
         </div>
 
         {/* Floating Ghost Card when dragging child item out of folder/modal */}
@@ -2686,6 +3042,22 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
             <div className="rounded-full bg-[var(--accent-red)] text-white px-4 py-1.5 text-xs font-medium shadow-lg">
               {activeErrorMsg}
             </div>
+          </div>
+        )}
+
+        {/* Drag-to-Trash Drop Zone Pill */}
+        {isAnyDragStarted && (
+          <div
+            ref={trashRef}
+            style={{ zIndex: 60 }}
+            className={`fixed bottom-5 left-1/2 -translate-x-1/2 pointer-events-none flex items-center gap-2 rounded-full border px-5 py-2.5 text-sm font-medium shadow-xl backdrop-blur-md transition-all duration-150 ${
+              overTrash
+                ? 'scale-110 border-[var(--accent-red)] bg-[var(--accent-red)] text-white shadow-red-500/30'
+                : 'border-[var(--border-strong)] bg-[var(--bg-card)]/95 text-[var(--accent-red)]'
+            }`}
+          >
+            <Trash2 size={16} />
+            <span>{overTrash ? '松手即可删除' : '拖到此处删除'}</span>
           </div>
         )}
       </div>

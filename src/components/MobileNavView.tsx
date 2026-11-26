@@ -9,6 +9,7 @@ import {
 } from 'react';
 import { flushSync } from 'react-dom';
 import {
+  ArrowLeft,
   Check,
   FolderCog,
   FolderOpen,
@@ -21,11 +22,14 @@ import {
   Plus,
   Search,
   Settings,
+  SlidersHorizontal,
+  StickyNote,
   Sun,
+  Trash2,
   Unlock,
   X,
 } from 'lucide-react';
-import type { BookmarkItem, FolderContainer, SiteSettings } from '../../shared/types';
+import type { BookmarkItem, FolderContainer, NoteWidget, SiteSettings } from '../../shared/types';
 import { fuzzyScore } from '../../shared/pinyin';
 import { useStagedWallpaper } from '../utils/loadTracker';
 import { IconGlyph } from './IconGlyph';
@@ -46,18 +50,37 @@ interface MobileNavViewProps {
   settings: SiteSettings;
   folders: FolderContainer[];
   items: BookmarkItem[];
+  notes: NoteWidget[];
   loading?: boolean;
   unlocked: boolean;
   hasPrivateHidden: boolean;
   dark: boolean;
   onToggleDark: () => void;
   onLockToggle: () => void;
+  onRequestUnlock: (reason?: string) => void;
   onSwitchToCanvas: () => void;
   onOpenSettings: () => void;
   onCreateItem: (defaultParentId: string | null) => void;
   onEditItem: (item: BookmarkItem) => void;
   onEditFolder?: (folder: FolderContainer) => void;
+  onSaveNote: (note: {
+    id?: string;
+    title: string;
+    content: string;
+    tint?: string;
+    isPrivate?: boolean;
+  }) => void;
+  onDeleteNote: (noteId: string) => void;
 }
+
+const NOTE_TINT_SWATCHES = [
+  { value: '', label: '素纸' },
+  { value: '#fef3c7', label: '琥珀黄' },
+  { value: '#d1fae5', label: '薄荷绿' },
+  { value: '#e0f2fe', label: '晴空蓝' },
+  { value: '#ffe4e6', label: '樱花粉' },
+  { value: '#ede9fe', label: '薰衣紫' },
+];
 
 const MOBILE_TAB_STORAGE_KEY = 'neko-like-mobile-tab';
 const MOBILE_LAYOUT_STORAGE_KEY = 'neko-like-mobile-layout';
@@ -79,20 +102,33 @@ export function MobileNavView({
   settings,
   folders,
   items,
+  notes,
   loading = false,
   unlocked,
   hasPrivateHidden,
   dark,
   onToggleDark,
   onLockToggle,
+  onRequestUnlock,
   onSwitchToCanvas,
   onOpenSettings,
   onCreateItem,
   onEditItem,
   onEditFolder,
+  onSaveNote,
+  onDeleteNote,
 }: MobileNavViewProps) {
   const [query, setQuery] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [notesOpen, setNotesOpen] = useState(false);
+  const [toolsExpanded, setToolsExpanded] = useState(false);
+  const [editingNote, setEditingNote] = useState<{
+    id?: string;
+    title: string;
+    content: string;
+    tint: string;
+    isPrivate: boolean;
+  } | null>(null);
   const [layoutMode, setLayoutMode] = useState<MobileLayoutMode>(() => {
     try {
       return localStorage.getItem(MOBILE_LAYOUT_STORAGE_KEY) === 'list' ? 'list' : 'grid';
@@ -111,6 +147,7 @@ export function MobileNavView({
   const pagerRef = useRef<HTMLDivElement>(null);
   const trackRef = useRef<HTMLDivElement>(null);
   const pickerItemRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+  const panelRefs = useRef<Map<string, HTMLElement>>(new Map());
 
   const swipeRef = useRef<{
     startX: number;
@@ -203,16 +240,32 @@ export function MobileNavView({
     }
   }, [activeTab, activeTabId]);
 
-  // Reset track transform in the exact commit frame after switching activeTabId
+  // Reset track transform and scroll top in the exact commit frame after switching activeTabId
   useLayoutEffect(() => {
-    if (!pendingResetRef.current) return;
-    pendingResetRef.current = false;
-    const track = trackRef.current;
-    if (track) {
-      track.style.transition = 'none';
-      track.style.transform = 'translate3d(0, 0, 0)';
+    if (pendingResetRef.current) {
+      pendingResetRef.current = false;
+      const track = trackRef.current;
+      if (track) {
+        track.style.transition = 'none';
+        track.style.transform = 'translate3d(0, 0, 0)';
+      }
+    }
+    if (activeTab) {
+      const panel = panelRefs.current.get(activeTab.id);
+      if (panel) {
+        panel.scrollTop = 0;
+      }
     }
   }, [activeTab?.id]);
+
+  // Clear note editor draft when notes drawer closes
+  useEffect(() => {
+    if (!notesOpen) {
+      setEditingNote(null);
+    }
+  }, [notesOpen]);
+
+  const sortedNotes = useMemo(() => [...notes].sort(compareReadingOrder), [notes]);
 
   // Scroll the active category row into view when the bottom picker opens
   useEffect(() => {
@@ -334,7 +387,7 @@ export function MobileNavView({
   }, [isSearching, items, tabs, trimmedQuery]);
 
   const handleTouchStart = (e: ReactTouchEvent<HTMLDivElement>) => {
-    if (pickerOpen || isSearching || tabs.length === 0 || e.touches.length !== 1) {
+    if (pickerOpen || notesOpen || isSearching || tabs.length === 0 || e.touches.length !== 1) {
       swipeRef.current = null;
       return;
     }
@@ -491,6 +544,10 @@ export function MobileNavView({
   const renderCategoryPanel = (tab: MobileCategoryTab, offsetPct: string) => (
     <section
       key={tab.id}
+      ref={(el) => {
+        if (el) panelRefs.current.set(tab.id, el);
+        else panelRefs.current.delete(tab.id);
+      }}
       style={{ left: offsetPct }}
       className="absolute top-0 bottom-0 w-full overflow-y-auto overscroll-y-contain px-3.5 pt-2 pb-56"
     >
@@ -798,15 +855,373 @@ export function MobileNavView({
         </>
       )}
 
-      {/* Bottom-Right Vertical Icon-Only Floating Action Dock */}
+      {/* Mobile Notes Drawer */}
+      {notesOpen && (
+        <>
+          <div
+            aria-hidden="true"
+            onClick={() => setNotesOpen(false)}
+            className="fixed inset-0 z-40 bg-black/32 backdrop-blur-[2px]"
+          />
+          <div
+            role="dialog"
+            aria-label="随手便签"
+            className="fixed inset-x-0 bottom-0 z-50 mx-auto max-w-xl rounded-t-[26px] bento-modal max-h-[82dvh] flex flex-col shadow-2xl pb-[env(safe-area-inset-bottom)]"
+          >
+            <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-[var(--border-hair)] shrink-0">
+              {editingNote ? (
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditingNote(null)}
+                    className="h-7 w-7 rounded-full flex items-center justify-center text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] cursor-pointer"
+                    aria-label="返回便签列表"
+                  >
+                    <ArrowLeft size={15} />
+                  </button>
+                  <span className="text-sm font-semibold text-[var(--ink-main)]">
+                    {editingNote.id ? '编辑便签' : '新建便签'}
+                  </span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <StickyNote size={16} className="text-[var(--accent-orange)]" />
+                  <span className="text-sm font-semibold text-[var(--ink-main)]">便签备忘</span>
+                  <span className="text-xs text-[var(--ink-muted)] tabular-nums">
+                    {sortedNotes.length}
+                  </span>
+                </div>
+              )}
+
+              <div className="flex items-center gap-1.5">
+                {!editingNote && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!unlocked) {
+                        onRequestUnlock('解锁后可新建与编辑便签');
+                        return;
+                      }
+                      setEditingNote({
+                        title: '',
+                        content: '',
+                        tint: '#fef3c7',
+                        isPrivate: false,
+                      });
+                    }}
+                    className="inline-flex items-center gap-1 rounded-full bg-[var(--accent-orange)] px-3 py-1 text-xs font-medium text-white cursor-pointer"
+                  >
+                    <Plus size={13} />
+                    <span>新建便签</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setNotesOpen(false)}
+                  className="h-7 w-7 rounded-full flex items-center justify-center text-[var(--ink-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] cursor-pointer"
+                  aria-label="关闭便签抽屉"
+                >
+                  <X size={15} />
+                </button>
+              </div>
+            </div>
+
+            {editingNote ? (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  onSaveNote({
+                    id: editingNote.id,
+                    title: editingNote.title.trim() || '随手便签',
+                    content: editingNote.content,
+                    tint: editingNote.tint || undefined,
+                    isPrivate: editingNote.isPrivate,
+                  });
+                  setEditingNote(null);
+                }}
+                className="flex-1 overflow-y-auto overscroll-y-contain p-4 space-y-3"
+              >
+                <div>
+                  <label className="block text-xs font-medium text-[var(--ink-secondary)] mb-1">
+                    标题
+                  </label>
+                  <input
+                    type="text"
+                    value={editingNote.title}
+                    onChange={(e) =>
+                      setEditingNote((cur) => (cur ? { ...cur, title: e.target.value } : cur))
+                    }
+                    placeholder="随手便签"
+                    className="bento-input w-full px-3 py-2 text-sm"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-[var(--ink-secondary)] mb-1">
+                    正文内容
+                  </label>
+                  <textarea
+                    rows={6}
+                    value={editingNote.content}
+                    onChange={(e) =>
+                      setEditingNote((cur) => (cur ? { ...cur, content: e.target.value } : cur))
+                    }
+                    placeholder="记下待办、备忘或灵感..."
+                    className="bento-input w-full px-3 py-2 text-sm resize-y min-h-[120px]"
+                    autoFocus
+                  />
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-0.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-[var(--ink-secondary)]">纸张底色</span>
+                    <div className="flex items-center gap-1.5">
+                      {NOTE_TINT_SWATCHES.map((sw) => {
+                        const active = editingNote.tint === sw.value;
+                        return (
+                          <button
+                            key={sw.label}
+                            type="button"
+                            title={sw.label}
+                            onClick={() =>
+                              setEditingNote((cur) => (cur ? { ...cur, tint: sw.value } : cur))
+                            }
+                            style={{ backgroundColor: sw.value || 'var(--bg-card)' }}
+                            className={`h-6 w-6 rounded-full border transition-transform cursor-pointer ${
+                              active
+                                ? 'scale-110 border-[var(--ink-main)] ring-2 ring-[var(--accent-orange)]/40'
+                                : 'border-[var(--border-strong)]'
+                            }`}
+                            aria-label={`底色 ${sw.label}`}
+                          />
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setEditingNote((cur) =>
+                        cur ? { ...cur, isPrivate: !cur.isPrivate } : cur
+                      )
+                    }
+                    className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium border cursor-pointer ${
+                      editingNote.isPrivate
+                        ? 'border-amber-500/45 bg-amber-500/12 text-amber-600 dark:text-amber-400'
+                        : 'border-[var(--border-hair)] bg-[var(--bg-subtle)] text-[var(--ink-secondary)]'
+                    }`}
+                  >
+                    <Lock size={12} />
+                    <span>{editingNote.isPrivate ? '私密便签' : '公开便签'}</span>
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between gap-2 pt-2 border-t border-[var(--border-hair)]">
+                  {editingNote.id ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onDeleteNote(editingNote.id!);
+                        setEditingNote(null);
+                      }}
+                      className="inline-flex items-center gap-1 rounded-xl px-3 py-2 text-xs font-medium text-[var(--accent-red)] hover:bg-red-500/10 cursor-pointer"
+                    >
+                      <Trash2 size={14} />
+                      <span>删除</span>
+                    </button>
+                  ) : (
+                    <span />
+                  )}
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditingNote(null)}
+                      className="rounded-xl px-3.5 py-2 text-xs font-medium text-[var(--ink-secondary)] bg-[var(--bg-subtle)] cursor-pointer"
+                    >
+                      取消
+                    </button>
+                    <button
+                      type="submit"
+                      className="rounded-xl px-4 py-2 text-xs font-medium text-white bg-[var(--accent-orange)] cursor-pointer"
+                    >
+                      保存便签
+                    </button>
+                  </div>
+                </div>
+              </form>
+            ) : (
+              <div className="flex-1 overflow-y-auto overscroll-y-contain p-4">
+                {sortedNotes.length === 0 ? (
+                  <div className="py-10 text-center space-y-3">
+                    <p className="text-xs text-[var(--ink-muted)]">还没有便签，随时记一条备忘吧</p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!unlocked) {
+                          onRequestUnlock('解锁后可新建与编辑便签');
+                          return;
+                        }
+                        setEditingNote({
+                          title: '',
+                          content: '',
+                          tint: '#fef3c7',
+                          isPrivate: false,
+                        });
+                      }}
+                      className="inline-flex items-center gap-1 rounded-full bg-[var(--accent-orange)] px-3.5 py-1.5 text-xs font-medium text-white cursor-pointer"
+                    >
+                      <Plus size={13} />
+                      <span>新建第一张便签</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    {sortedNotes.map((note) => {
+                      const hasTint = Boolean(note.tint);
+                      return (
+                        <button
+                          key={note.id}
+                          type="button"
+                          onClick={() => {
+                            if (!unlocked) {
+                              onRequestUnlock('解锁后可编辑便签');
+                              return;
+                            }
+                            setEditingNote({
+                              id: note.id,
+                              title: note.title,
+                              content: note.content,
+                              tint: note.tint ?? '',
+                              isPrivate: Boolean(note.isPrivate),
+                            });
+                          }}
+                          style={{
+                            backgroundColor: hasTint ? note.tint : undefined,
+                          }}
+                          className={`text-left rounded-2xl border p-3.5 transition-transform active:scale-[0.99] cursor-pointer ${
+                            hasTint
+                              ? 'border-black/10 text-stone-900'
+                              : 'border-[var(--border-hair)] bg-[var(--bg-subtle)] text-[var(--ink-main)]'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2 mb-1.5">
+                            <span className="text-[13px] font-semibold truncate">
+                              {note.title || '随手便签'}
+                            </span>
+                            {note.isPrivate && (
+                              <Lock
+                                size={12}
+                                className={hasTint ? 'text-amber-700 shrink-0' : 'text-amber-500 shrink-0'}
+                              />
+                            )}
+                          </div>
+                          <p
+                            className={`text-xs whitespace-pre-wrap line-clamp-4 leading-relaxed ${
+                              hasTint ? 'text-stone-700' : 'text-[var(--ink-secondary)]'
+                            }`}
+                          >
+                            {note.content?.trim() || '（空便签，点击编辑）'}
+                          </p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Bottom-Right Vertical Icon-Only Floating Action Dock (Compact + Expandable Tools) */}
       <aside
         aria-label="快捷操作栏"
         className="fixed right-3 bottom-[calc(1rem+env(safe-area-inset-bottom))] z-50 pill-surface rounded-full p-1.5 shadow-lg flex flex-col items-center gap-1"
       >
+        {toolsExpanded && (
+          <>
+            <button
+              type="button"
+              onClick={toggleLayoutMode}
+              className="h-9 w-9 rounded-full flex items-center justify-center text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] transition-colors cursor-pointer active:scale-95"
+              aria-label="切换卡片列数"
+              title={layoutMode === 'grid' ? '切换为单列列表' : '切换为双列卡片'}
+            >
+              {layoutMode === 'grid' ? <List size={15} /> : <LayoutGrid size={15} />}
+            </button>
+
+            <button
+              type="button"
+              onClick={onToggleDark}
+              className="h-9 w-9 rounded-full flex items-center justify-center text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] transition-colors cursor-pointer active:scale-95"
+              aria-label="切换深浅色主题"
+              title="切换深浅色主题"
+            >
+              {dark ? <Sun size={15} /> : <Moon size={15} />}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setToolsExpanded(false);
+                onSwitchToCanvas();
+              }}
+              className="h-9 w-9 rounded-full flex items-center justify-center text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] transition-colors cursor-pointer active:scale-95"
+              aria-label="切换至二维画布视图"
+              title="切换至二维画布视图"
+            >
+              <MapIcon size={15} />
+            </button>
+
+            {unlocked && (
+              <button
+                type="button"
+                onClick={() => {
+                  setToolsExpanded(false);
+                  onOpenSettings();
+                }}
+                className="h-9 w-9 rounded-full flex items-center justify-center text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] transition-colors cursor-pointer active:scale-95"
+                aria-label="站点设置"
+                title="站点设置"
+              >
+                <Settings size={15} />
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => {
+                setToolsExpanded(false);
+                onLockToggle();
+              }}
+              className={`relative h-9 w-9 rounded-full flex items-center justify-center transition-colors cursor-pointer active:scale-95 ${
+                unlocked
+                  ? 'bg-amber-500/14 text-amber-600 dark:text-amber-400'
+                  : 'text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)]'
+              }`}
+              aria-label={unlocked ? '上锁并隐藏私密内容' : '解锁管理与私密分类'}
+              title={unlocked ? '上锁并隐藏私密内容' : '解锁管理与私密分类'}
+            >
+              {unlocked ? <Unlock size={15} /> : <Lock size={15} />}
+              {!unlocked && hasPrivateHidden && (
+                <span className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-[var(--accent-orange)]" />
+              )}
+            </button>
+
+            <div className="w-5 h-px bg-[var(--border-hair)] my-0.5" />
+          </>
+        )}
+
         {!isSearching && !loading && activeTab && (
           <button
             type="button"
-            onClick={() => setPickerOpen((v) => !v)}
+            onClick={() => {
+              setToolsExpanded(false);
+              setNotesOpen(false);
+              setPickerOpen((v) => !v);
+            }}
             className={`relative h-9 w-9 rounded-full flex items-center justify-center transition-colors cursor-pointer active:scale-95 ${
               pickerOpen
                 ? 'bg-[var(--ink-main)] text-[var(--bg-card)]'
@@ -828,10 +1243,35 @@ export function MobileNavView({
           </button>
         )}
 
+        <button
+          type="button"
+          onClick={() => {
+            setToolsExpanded(false);
+            setPickerOpen(false);
+            setNotesOpen((v) => !v);
+          }}
+          className={`relative h-9 w-9 rounded-full flex items-center justify-center transition-colors cursor-pointer active:scale-95 ${
+            notesOpen
+              ? 'bg-[var(--ink-main)] text-[var(--bg-card)]'
+              : 'text-[var(--ink-main)] hover:bg-[var(--bg-subtle)]'
+          }`}
+          aria-expanded={notesOpen}
+          aria-label="打开便签备忘抽屉"
+          title={`随手便签 (${sortedNotes.length})`}
+        >
+          <StickyNote size={16} />
+          {sortedNotes.length > 0 && !notesOpen && (
+            <span className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-amber-400" />
+          )}
+        </button>
+
         {unlocked && (
           <button
             type="button"
-            onClick={() => onCreateItem(activeTab?.kind === 'folder' ? activeTab.id : null)}
+            onClick={() => {
+              setToolsExpanded(false);
+              onCreateItem(activeTab?.kind === 'folder' ? activeTab.id : null);
+            }}
             className="h-9 w-9 rounded-full flex items-center justify-center bg-[var(--accent-orange)] text-white shadow-xs transition-transform cursor-pointer active:scale-95"
             aria-label="快速新增书签"
             title="快速新增书签"
@@ -842,59 +1282,18 @@ export function MobileNavView({
 
         <button
           type="button"
-          onClick={toggleLayoutMode}
-          className="h-9 w-9 rounded-full flex items-center justify-center text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] transition-colors cursor-pointer active:scale-95"
-          aria-label="切换卡片列数"
-          title={layoutMode === 'grid' ? '切换为单列列表' : '切换为双列卡片'}
-        >
-          {layoutMode === 'grid' ? <List size={15} /> : <LayoutGrid size={15} />}
-        </button>
-
-        <button
-          type="button"
-          onClick={onToggleDark}
-          className="h-9 w-9 rounded-full flex items-center justify-center text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] transition-colors cursor-pointer active:scale-95"
-          aria-label="切换深浅色主题"
-          title="切换深浅色主题"
-        >
-          {dark ? <Sun size={15} /> : <Moon size={15} />}
-        </button>
-
-        <button
-          type="button"
-          onClick={onSwitchToCanvas}
-          className="h-9 w-9 rounded-full flex items-center justify-center text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] transition-colors cursor-pointer active:scale-95"
-          aria-label="切换至二维画布视图"
-          title="切换至二维画布视图"
-        >
-          <MapIcon size={15} />
-        </button>
-
-        {unlocked && (
-          <button
-            type="button"
-            onClick={onOpenSettings}
-            className="h-9 w-9 rounded-full flex items-center justify-center text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] transition-colors cursor-pointer active:scale-95"
-            aria-label="站点设置"
-            title="站点设置"
-          >
-            <Settings size={15} />
-          </button>
-        )}
-
-        <button
-          type="button"
-          onClick={onLockToggle}
+          onClick={() => setToolsExpanded((v) => !v)}
           className={`relative h-9 w-9 rounded-full flex items-center justify-center transition-colors cursor-pointer active:scale-95 ${
-            unlocked
-              ? 'bg-amber-500/14 text-amber-600 dark:text-amber-400'
+            toolsExpanded
+              ? 'bg-[var(--bg-subtle)] text-[var(--ink-main)]'
               : 'text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)]'
           }`}
-          aria-label={unlocked ? '上锁并隐藏私密内容' : '解锁管理与私密分类'}
-          title={unlocked ? '上锁并隐藏私密内容' : '解锁管理与私密分类'}
+          aria-expanded={toolsExpanded}
+          aria-label="更多工具"
+          title="更多工具"
         >
-          {unlocked ? <Unlock size={15} /> : <Lock size={15} />}
-          {!unlocked && hasPrivateHidden && (
+          <SlidersHorizontal size={15} />
+          {!toolsExpanded && !unlocked && hasPrivateHidden && (
             <span className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-[var(--accent-orange)]" />
           )}
         </button>

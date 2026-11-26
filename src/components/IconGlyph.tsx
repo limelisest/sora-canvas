@@ -75,6 +75,93 @@ export const ICON_MAP: Record<string, LucideIcon> = {
 
 export const ICON_PRESET_NAMES = Object.keys(ICON_MAP);
 
+const DEAD_FAVICON_STORAGE_KEY = 'neko-dead-favicons';
+const DEAD_FAVICON_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const DEAD_FAVICON_MAX_ENTRIES = 400;
+
+let deadFaviconCache: Map<string, number> | null = null;
+
+function isExemptFaviconUrl(url: string): boolean {
+  return url.startsWith('/api/uploads/') || url.startsWith('data:');
+}
+
+function loadDeadFaviconCache(): Map<string, number> {
+  if (deadFaviconCache) return deadFaviconCache;
+  const map = new Map<string, number>();
+  deadFaviconCache = map;
+  if (typeof window === 'undefined' || !window.localStorage) return map;
+  try {
+    const raw = window.localStorage.getItem(DEAD_FAVICON_STORAGE_KEY);
+    if (!raw) return map;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return map;
+    const now = Date.now();
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === 'number' && Number.isFinite(v) && now - v < DEAD_FAVICON_TTL_MS) {
+        map.set(k, v);
+      }
+    }
+  } catch {
+    // Ignore corrupt localStorage entries
+  }
+  return map;
+}
+
+function persistDeadFaviconCache(map: Map<string, number>): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    if (map.size > DEAD_FAVICON_MAX_ENTRIES) {
+      const sorted = Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
+      map.clear();
+      for (const [k, v] of sorted.slice(0, DEAD_FAVICON_MAX_ENTRIES)) {
+        map.set(k, v);
+      }
+    }
+    window.localStorage.setItem(
+      DEAD_FAVICON_STORAGE_KEY,
+      JSON.stringify(Object.fromEntries(map.entries()))
+    );
+  } catch {
+    // Ignore quota / storage errors
+  }
+}
+
+function isDeadFavicon(url?: string): boolean {
+  if (!url) return false;
+  const trimmed = url.trim();
+  if (!trimmed || isExemptFaviconUrl(trimmed)) return false;
+  const map = loadDeadFaviconCache();
+  const failedAt = map.get(trimmed);
+  if (failedAt === undefined) return false;
+  if (Date.now() - failedAt >= DEAD_FAVICON_TTL_MS) {
+    map.delete(trimmed);
+    persistDeadFaviconCache(map);
+    return false;
+  }
+  return true;
+}
+
+function markDeadFavicon(url?: string): void {
+  if (!url) return;
+  const trimmed = url.trim();
+  if (!trimmed || isExemptFaviconUrl(trimmed)) return;
+  const map = loadDeadFaviconCache();
+  map.set(trimmed, Date.now());
+  persistDeadFaviconCache(map);
+}
+
+/** Clear dead-favicon cooldown cache entry when user manually edits/saves an icon URL. */
+export function clearDeadFavicon(url?: string): void {
+  if (!url) return;
+  const trimmed = url.trim();
+  if (!trimmed) return;
+  const map = loadDeadFaviconCache();
+  const changed = map.delete(trimmed) || (trimmed !== url && map.delete(url));
+  if (changed) {
+    persistDeadFaviconCache(map);
+  }
+}
+
 interface IconGlyphProps {
   icon?: string;
   faviconUrl?: string;
@@ -95,13 +182,13 @@ export function IconGlyph({
   isFolder = false,
 }: IconGlyphProps) {
   const loadPhase = useLoadPhase();
-  const [imgFailed, setImgFailed] = useState(false);
+  const [imgFailed, setImgFailed] = useState(() => isDeadFavicon(faviconUrl));
   const [imgLoaded, setImgLoaded] = useState(false);
   const imgRef = useRef<HTMLImageElement>(null);
   const trackedRef = useRef(false);
 
   useEffect(() => {
-    setImgFailed(false);
+    setImgFailed(isDeadFavicon(faviconUrl));
     setImgLoaded(false);
     trackedRef.current = false;
   }, [faviconUrl]);
@@ -132,13 +219,14 @@ export function IconGlyph({
       if (el.naturalWidth > 0) {
         setImgLoaded(true);
       } else {
+        markDeadFavicon(faviconUrl);
         setImgFailed(true);
       }
       if (trackedRef.current) {
         markTrackedAssetSettled(assetKey);
       }
     }
-  }, [shouldShowImg, assetKey]);
+  }, [shouldShowImg, assetKey, faviconUrl]);
 
   const renderFallback = () => {
     if (icon && ICON_MAP[icon]) {
@@ -210,6 +298,7 @@ export function IconGlyph({
               if (trackedRef.current && assetKey) markTrackedAssetSettled(assetKey);
             }}
             onError={() => {
+              markDeadFavicon(faviconUrl);
               setImgFailed(true);
               if (trackedRef.current && assetKey) markTrackedAssetSettled(assetKey);
             }}

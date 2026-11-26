@@ -1324,3 +1324,110 @@ test('v4 quarter-grid, private zones isolation, image uploads, and carousel/text
     await fs.rm(isolatedDir, { recursive: true, force: true });
   }
 });
+
+test('backup export bundles referenced uploads and import restores exact bytes to a fresh instance', async () => {
+  const dirA = await fs.mkdtemp(path.join(os.tmpdir(), 'neko-backup-a-'));
+  const dirB = await fs.mkdtemp(path.join(os.tmpdir(), 'neko-backup-b-'));
+  const appA = await buildApp({ dataDir: dirA, password: 'pwA', serveStatic: false });
+  const appB = await buildApp({ dataDir: dirB, password: 'pwB', serveStatic: false });
+  const now = new Date().toISOString();
+
+  try {
+    const unlockA = await appA.inject({
+      method: 'POST',
+      url: '/api/auth/unlock',
+      payload: { password: 'pwA' },
+    });
+    assert.equal(unlockA.statusCode, 200);
+    const cookieA = unlockA.headers['set-cookie'] as string;
+
+    const unlockB = await appB.inject({
+      method: 'POST',
+      url: '/api/auth/unlock',
+      payload: { password: 'pwB' },
+    });
+    assert.equal(unlockB.statusCode, 200);
+    const cookieB = unlockB.headers['set-cookie'] as string;
+
+    const pngBuf = await sharp({
+      create: { width: 4, height: 4, channels: 3, background: { r: 255, g: 85, b: 0 } },
+    })
+      .png()
+      .toBuffer();
+    const uploadRes = await appA.inject({
+      method: 'POST',
+      url: '/api/uploads/image',
+      headers: { cookie: cookieA },
+      payload: { dataUrl: `data:image/png;base64,${pngBuf.toString('base64')}` },
+    });
+    assert.equal(uploadRes.statusCode, 200);
+    const uploadedUrl = uploadRes.json().url as string;
+    const filename = uploadedUrl.split('/').pop()!;
+
+    const putRes = await appA.inject({
+      method: 'PUT',
+      url: '/api/canvas',
+      headers: { cookie: cookieA },
+      payload: {
+        folders: [],
+        items: [],
+        zones: [],
+        widgets: [
+          {
+            id: 'carousel-backup-1',
+            kind: 'carousel',
+            title: 'Backup Carousel',
+            images: [{ id: 'img-1', url: uploadedUrl }],
+            intervalSec: 4,
+            transition: 'fade',
+            fit: 'cover',
+            x: 0,
+            y: 0,
+            w: 2,
+            h: 2,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+      },
+    });
+    assert.equal(putRes.statusCode, 200);
+
+    const bytesResA = await appA.inject({ method: 'GET', url: uploadedUrl });
+    assert.equal(bytesResA.statusCode, 200);
+
+    const exportRes = await appA.inject({
+      method: 'GET',
+      url: '/api/backup/export',
+      headers: { cookie: cookieA },
+    });
+    assert.equal(exportRes.statusCode, 200);
+    const exportedJson = exportRes.json() as {
+      canvas: unknown;
+      settings: unknown;
+      uploads?: Record<string, string>;
+    };
+    assert.ok(exportedJson.uploads && typeof exportedJson.uploads[filename] === 'string');
+
+    // Fresh instance B does not have the upload yet
+    assert.equal((await appB.inject({ method: 'GET', url: uploadedUrl })).statusCode, 404);
+
+    // Import into instance B and verify exact file bytes are served
+    const importRes = await appB.inject({
+      method: 'POST',
+      url: '/api/backup/import',
+      headers: { cookie: cookieB },
+      payload: exportedJson,
+    });
+    assert.equal(importRes.statusCode, 200);
+
+    const bytesResB = await appB.inject({ method: 'GET', url: uploadedUrl });
+    assert.equal(bytesResB.statusCode, 200);
+    assert.equal(Buffer.compare(bytesResA.rawPayload, bytesResB.rawPayload), 0);
+  } finally {
+    await appA.close();
+    await appB.close();
+    await fs.rm(dirA, { recursive: true, force: true });
+    await fs.rm(dirB, { recursive: true, force: true });
+  }
+});
