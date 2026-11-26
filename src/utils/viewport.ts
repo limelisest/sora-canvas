@@ -1,6 +1,6 @@
 import type { CanvasDocument, SiteSettings, ViewportMode } from '../../shared/types';
 import { getTopLevelEntities } from '../../shared/gridEngine';
-import { ZONE_OUTSET_PX } from '../components/ZoneCard';
+import { ZONE_HEADER_PX, ZONE_OUTSET_PX } from '../components/ZoneCard';
 
 export const MIN_VIEW_SCALE = 0.25;
 export const MAX_VIEW_SCALE = 2.25;
@@ -39,10 +39,10 @@ export function getContentBoundsWorld(doc: CanvasDocument): {
   const expand = (
     n: { x: number; y: number; w: number; h: number },
     outsetPx = 0,
-    extraTopPx = 0
+    topOutsetPx = outsetPx
   ) => {
     const left = n.x * step - outsetPx;
-    const top = n.y * step - outsetPx - extraTopPx;
+    const top = n.y * step - topOutsetPx;
     const right = n.x * step + n.w * doc.grid.cellSize + (n.w - 1) * doc.grid.gap + outsetPx;
     const bottom = n.y * step + n.h * doc.grid.cellSize + (n.h - 1) * doc.grid.gap + outsetPx;
     minX = Math.min(minX, left);
@@ -52,7 +52,7 @@ export function getContentBoundsWorld(doc: CanvasDocument): {
   };
 
   for (const n of entities) expand(n);
-  for (const z of zones) expand(z, ZONE_OUTSET_PX, 8);
+  for (const z of zones) expand(z, ZONE_OUTSET_PX, ZONE_HEADER_PX);
   for (const t of textWidgets) expand(t);
 
   return { minX, minY, maxX, maxY };

@@ -2451,7 +2451,7 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
             );
           })}
 
-          {/* Top Zone Overlay Layer (zIndex: 28 / 36): bottom-right floating title pill + edit handles */}
+          {/* Top Zone Overlay Layer (zIndex: 28 / 36): dedicated top header bar + edit handles */}
           {renderedZones.map((zone) => {
             const isZoneDragging = zoneDrag?.started && zoneDrag.zone.id === zone.id;
             return (

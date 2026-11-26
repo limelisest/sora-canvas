@@ -9,7 +9,8 @@ import { Lock, Pencil } from 'lucide-react';
 import type { GridConfig, ZoneContainer } from '../../shared/types';
 import type { ContextMenuTarget } from './CanvasCard';
 
-export const ZONE_OUTSET_PX = 6;
+export const ZONE_OUTSET_PX = 5;
+export const ZONE_HEADER_PX = 28;
 
 interface ZoneBox {
   left: number;
@@ -29,10 +30,10 @@ function computeZoneBox(zone: ZoneContainer, grid: GridConfig): ZoneBox {
 
   return {
     left: logicalLeft - ZONE_OUTSET_PX,
-    top: logicalTop - ZONE_OUTSET_PX,
+    top: logicalTop - ZONE_HEADER_PX,
     width: logicalW + ZONE_OUTSET_PX * 2,
-    height: logicalH + ZONE_OUTSET_PX * 2,
-    borderRadius: zone.w === 1 && zone.h === 1 ? 26 : 30,
+    height: logicalH + ZONE_HEADER_PX + ZONE_OUTSET_PX,
+    borderRadius: zone.w === 1 && zone.h === 1 ? 25 : 29,
     accent: zone.accent || (zone.isPrivate ? '#f97316' : '#64748b'),
   };
 }
@@ -81,19 +82,19 @@ export function ZoneCard({
   const isActivelyDragged = Boolean(dragOffset);
   const skipTransition = useSuppressDropTransition(isActivelyDragged);
 
-  const borderColor = isError
-    ? 'var(--accent-red)'
-    : isSelected || isResizing
-      ? 'var(--accent-orange)'
-      : zone.isPrivate
-        ? 'color-mix(in srgb, #ff5500 52%, var(--border-strong))'
-        : `color-mix(in srgb, ${box.accent} 36%, var(--border-strong))`;
-
   const fillBg = isError
     ? 'rgba(220, 38, 38, 0.08)'
     : zone.isPrivate
-      ? 'color-mix(in srgb, #ff5500 6%, transparent)'
-      : `color-mix(in srgb, ${box.accent} 5.5%, transparent)`;
+      ? 'color-mix(in srgb, #ff5500 9.5%, transparent)'
+      : `color-mix(in srgb, ${box.accent} 9.5%, transparent)`;
+
+  const borderStyle = isError
+    ? '1.5px solid var(--accent-red)'
+    : isSelected || isResizing
+      ? '1.5px solid var(--accent-orange)'
+      : zone.isPrivate
+        ? '1px solid color-mix(in srgb, #ff5500 42%, var(--border-strong))'
+        : `1px solid color-mix(in srgb, ${box.accent} 26%, var(--border-hair))`;
 
   return (
     <div
@@ -106,7 +107,8 @@ export function ZoneCard({
         height: box.height,
         borderRadius: box.borderRadius,
         backgroundColor: fillBg,
-        border: `1.5px ${isSelected || zone.isPrivate ? 'solid' : 'dashed'} ${borderColor}`,
+        border: borderStyle,
+        boxShadow: 'inset 0 1px 2px rgba(0, 0, 0, 0.03)',
         transform: isActivelyDragged
           ? `translate3d(${dragOffset!.dxPx}px, ${dragOffset!.dyPx}px, 0)`
           : undefined,
@@ -135,7 +137,7 @@ interface ZoneOverlayProps {
 
 /**
  * Top overlay layer of a ZoneContainer (zIndex 28 / 36 while dragging).
- * Hosts the top-centered floating title pill and edit-mode border hit-strips / resize handle.
+ * Hosts the top 28px dedicated tray header bar and edit-mode border hit-strips / resize handle.
  */
 export function ZoneOverlay({
   zone,
@@ -180,7 +182,7 @@ export function ZoneOverlay({
       }}
       className="pointer-events-none select-none"
     >
-      {/* Top-centered floating title pill anchored across the top border, shifted inward */}
+      {/* Dedicated 28px tray header bar integrated into top zone area */}
       <div
         onPointerDown={
           editMode
@@ -198,12 +200,9 @@ export function ZoneOverlay({
             : undefined
         }
         onContextMenu={editMode ? handleZoneContextMenu : undefined}
-        style={{
-          borderColor: `color-mix(in srgb, ${box.accent} 28%, var(--border-hair))`,
-        }}
-        className={`absolute -top-1.5 left-1/2 -translate-x-1/2 z-20 max-w-[calc(100%-32px)] inline-flex items-center gap-1.5 rounded-full px-3.5 py-1 text-[13px] leading-tight font-semibold bg-[var(--bg-card)]/96 backdrop-blur-md border shadow-sm ${
+        className={`absolute top-0 left-0 right-0 h-[28px] px-3 flex items-center justify-between gap-2 z-20 ${
           editMode
-            ? 'pointer-events-auto cursor-grab active:cursor-grabbing'
+            ? 'pointer-events-auto cursor-grab active:cursor-grabbing rounded-t-[28px]'
             : 'pointer-events-none'
         }`}
         title={
@@ -212,12 +211,16 @@ export function ZoneOverlay({
             : zone.title
         }
       >
-        <span
-          className="h-2.5 w-2.5 rounded-full shrink-0"
-          style={{ backgroundColor: zone.isPrivate ? '#ff5500' : box.accent }}
-        />
-        {zone.isPrivate && <Lock size={11.5} className="text-amber-500 shrink-0" />}
-        <span className="truncate text-[var(--ink-main)]">{zone.title}</span>
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span
+            className="h-2 w-2 rounded-full shrink-0"
+            style={{ backgroundColor: zone.isPrivate ? '#ff5500' : box.accent }}
+          />
+          {zone.isPrivate && <Lock size={11} className="text-amber-500 shrink-0" />}
+          <span className="text-[12.5px] font-bold tracking-wide text-[var(--ink-main)] truncate">
+            {zone.title}
+          </span>
+        </div>
         {editMode && (
           <button
             type="button"
@@ -226,7 +229,7 @@ export function ZoneOverlay({
               e.stopPropagation();
               onEditZone(zone);
             }}
-            className="ml-0.5 h-4.5 w-4.5 rounded-full inline-flex items-center justify-center text-[var(--ink-muted)] hover:text-[var(--ink-main)] hover:bg-[var(--bg-subtle)] cursor-pointer shrink-0"
+            className="h-4.5 w-4.5 rounded-full inline-flex items-center justify-center text-[var(--ink-muted)] hover:text-[var(--ink-main)] hover:bg-[var(--bg-subtle)] cursor-pointer shrink-0"
             title="编辑分区框"
           >
             <Pencil size={11} />
@@ -234,32 +237,23 @@ export function ZoneOverlay({
         )}
       </div>
 
-      {/* Edit-mode 8px perimeter hit strips + bottom-right integer resize handle */}
+      {/* Edit-mode 6px left/right/bottom perimeter hit strips + bottom-right integer resize handle */}
       {editMode && (
         <>
           <div
             onPointerDown={(e) => onZonePointerDown(e, zone)}
-            onDoubleClick={(e) => {
-              e.stopPropagation();
-              onEditZone(zone);
-            }}
             onContextMenu={handleZoneContextMenu}
-            className="pointer-events-auto absolute top-0 left-3 right-3 h-2 cursor-grab active:cursor-grabbing"
+            className="pointer-events-auto absolute bottom-0 left-3 right-7 h-[6px] cursor-grab active:cursor-grabbing"
           />
           <div
             onPointerDown={(e) => onZonePointerDown(e, zone)}
             onContextMenu={handleZoneContextMenu}
-            className="pointer-events-auto absolute bottom-0 left-3 right-7 h-2 cursor-grab active:cursor-grabbing"
+            className="pointer-events-auto absolute top-7 bottom-3 left-0 w-[6px] cursor-grab active:cursor-grabbing"
           />
           <div
             onPointerDown={(e) => onZonePointerDown(e, zone)}
             onContextMenu={handleZoneContextMenu}
-            className="pointer-events-auto absolute top-3 bottom-3 left-0 w-2 cursor-grab active:cursor-grabbing"
-          />
-          <div
-            onPointerDown={(e) => onZonePointerDown(e, zone)}
-            onContextMenu={handleZoneContextMenu}
-            className="pointer-events-auto absolute top-3 bottom-7 right-0 w-2 cursor-grab active:cursor-grabbing"
+            className="pointer-events-auto absolute top-7 bottom-7 right-0 w-[6px] cursor-grab active:cursor-grabbing"
           />
 
           <button
