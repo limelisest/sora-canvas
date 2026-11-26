@@ -9,40 +9,35 @@ import { Lock, Pencil } from 'lucide-react';
 import type { GridConfig, ZoneContainer } from '../../shared/types';
 import type { ContextMenuTarget } from './CanvasCard';
 
-interface ZoneCardProps {
-  zone: ZoneContainer;
-  grid: GridConfig;
-  editMode: boolean;
-  isSelected: boolean;
-  isResizing: boolean;
-  isError?: boolean;
-  dragOffset?: { dxPx: number; dyPx: number } | null;
-  onZonePointerDown: (e: ReactPointerEvent, zone: ZoneContainer) => void;
-  onZoneResizePointerDown: (e: ReactPointerEvent, zone: ZoneContainer) => void;
-  onEditZone: (zone: ZoneContainer) => void;
-  onOpenContextMenu?: (e: ReactMouseEvent, target: ContextMenuTarget) => void;
+export const ZONE_OUTSET_PX = 6;
+
+interface ZoneBox {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  borderRadius: number;
+  accent: string;
 }
 
-export function ZoneCard({
-  zone,
-  grid,
-  editMode,
-  isSelected,
-  isResizing,
-  isError = false,
-  dragOffset,
-  onZonePointerDown,
-  onZoneResizePointerDown,
-  onEditZone,
-  onOpenContextMenu,
-}: ZoneCardProps) {
+function computeZoneBox(zone: ZoneContainer, grid: GridConfig): ZoneBox {
   const step = grid.cellSize + grid.gap;
-  const left = zone.x * step;
-  const top = zone.y * step;
-  const width = zone.w * grid.cellSize + (zone.w - 1) * grid.gap;
-  const height = zone.h * grid.cellSize + (zone.h - 1) * grid.gap;
-  const isActivelyDragged = Boolean(dragOffset);
+  const logicalLeft = zone.x * step;
+  const logicalTop = zone.y * step;
+  const logicalW = zone.w * grid.cellSize + (zone.w - 1) * grid.gap;
+  const logicalH = zone.h * grid.cellSize + (zone.h - 1) * grid.gap;
 
+  return {
+    left: logicalLeft - ZONE_OUTSET_PX,
+    top: logicalTop - ZONE_OUTSET_PX,
+    width: logicalW + ZONE_OUTSET_PX * 2,
+    height: logicalH + ZONE_OUTSET_PX * 2,
+    borderRadius: zone.w === 1 && zone.h === 1 ? 26 : 30,
+    accent: zone.accent || (zone.isPrivate ? '#f97316' : '#64748b'),
+  };
+}
+
+function useSuppressDropTransition(isActivelyDragged: boolean): boolean {
   const prevDraggedRef = useRef(false);
   const [suppressDropTransition, setSuppressDropTransition] = useState(false);
 
@@ -58,23 +53,104 @@ export function ZoneCard({
     prevDraggedRef.current = isActivelyDragged;
   }, [isActivelyDragged]);
 
-  const skipTransition =
-    isActivelyDragged || suppressDropTransition || (prevDraggedRef.current && !isActivelyDragged);
+  return isActivelyDragged || suppressDropTransition || (prevDraggedRef.current && !isActivelyDragged);
+}
 
-  const accent = zone.accent || (zone.isPrivate ? '#f97316' : '#64748b');
+interface ZoneCardProps {
+  zone: ZoneContainer;
+  grid: GridConfig;
+  isSelected: boolean;
+  isResizing: boolean;
+  isError?: boolean;
+  dragOffset?: { dxPx: number; dyPx: number } | null;
+}
+
+/**
+ * Background layer of a ZoneContainer (zIndex 2..4 / 34 while dragging).
+ * Strictly pointer-events-none so internal cards & canvas remain seamlessly interactive.
+ */
+export function ZoneCard({
+  zone,
+  grid,
+  isSelected,
+  isResizing,
+  isError = false,
+  dragOffset,
+}: ZoneCardProps) {
+  const box = computeZoneBox(zone, grid);
+  const isActivelyDragged = Boolean(dragOffset);
+  const skipTransition = useSuppressDropTransition(isActivelyDragged);
+
   const borderColor = isError
     ? 'var(--accent-red)'
     : isSelected || isResizing
       ? 'var(--accent-orange)'
       : zone.isPrivate
         ? 'color-mix(in srgb, #ff5500 52%, var(--border-strong))'
-        : `color-mix(in srgb, ${accent} 36%, var(--border-strong))`;
+        : `color-mix(in srgb, ${box.accent} 36%, var(--border-strong))`;
 
   const fillBg = isError
     ? 'rgba(220, 38, 38, 0.08)'
     : zone.isPrivate
       ? 'color-mix(in srgb, #ff5500 6%, transparent)'
-      : `color-mix(in srgb, ${accent} 5.5%, transparent)`;
+      : `color-mix(in srgb, ${box.accent} 5.5%, transparent)`;
+
+  return (
+    <div
+      data-zone-id={zone.id}
+      style={{
+        position: 'absolute',
+        left: box.left,
+        top: box.top,
+        width: box.width,
+        height: box.height,
+        borderRadius: box.borderRadius,
+        backgroundColor: fillBg,
+        border: `1.5px ${isSelected || zone.isPrivate ? 'solid' : 'dashed'} ${borderColor}`,
+        transform: isActivelyDragged
+          ? `translate3d(${dragOffset!.dxPx}px, ${dragOffset!.dyPx}px, 0)`
+          : undefined,
+        transition: skipTransition
+          ? 'none'
+          : 'left 160ms cubic-bezier(0.22, 1, 0.36, 1), top 160ms cubic-bezier(0.22, 1, 0.36, 1), width 120ms ease, height 120ms ease, border-color 150ms ease',
+        willChange: isActivelyDragged ? 'transform' : undefined,
+        zIndex: isActivelyDragged ? 34 : isSelected || isResizing ? 4 : 2,
+      }}
+      className="pointer-events-none select-none"
+    />
+  );
+}
+
+interface ZoneOverlayProps {
+  zone: ZoneContainer;
+  grid: GridConfig;
+  editMode: boolean;
+  isResizing: boolean;
+  dragOffset?: { dxPx: number; dyPx: number } | null;
+  onZonePointerDown: (e: ReactPointerEvent, zone: ZoneContainer) => void;
+  onZoneResizePointerDown: (e: ReactPointerEvent, zone: ZoneContainer) => void;
+  onEditZone: (zone: ZoneContainer) => void;
+  onOpenContextMenu?: (e: ReactMouseEvent, target: ContextMenuTarget) => void;
+}
+
+/**
+ * Top overlay layer of a ZoneContainer (zIndex 28 / 36 while dragging).
+ * Hosts the bottom-right floating title pill and edit-mode border hit-strips / resize handle.
+ */
+export function ZoneOverlay({
+  zone,
+  grid,
+  editMode,
+  isResizing,
+  dragOffset,
+  onZonePointerDown,
+  onZoneResizePointerDown,
+  onEditZone,
+  onOpenContextMenu,
+}: ZoneOverlayProps) {
+  const box = computeZoneBox(zone, grid);
+  const isActivelyDragged = Boolean(dragOffset);
+  const skipTransition = useSuppressDropTransition(isActivelyDragged);
 
   const handleZoneContextMenu = (e: ReactMouseEvent) => {
     if (!onOpenContextMenu) return;
@@ -88,25 +164,23 @@ export function ZoneCard({
       data-zone-id={zone.id}
       style={{
         position: 'absolute',
-        left,
-        top,
-        width,
-        height,
-        borderRadius: 28,
-        backgroundColor: fillBg,
-        border: `1.5px ${isSelected || zone.isPrivate ? 'solid' : 'dashed'} ${borderColor}`,
+        left: box.left,
+        top: box.top,
+        width: box.width,
+        height: box.height,
+        borderRadius: box.borderRadius,
         transform: isActivelyDragged
           ? `translate3d(${dragOffset!.dxPx}px, ${dragOffset!.dyPx}px, 0)`
           : undefined,
         transition: skipTransition
           ? 'none'
-          : 'left 160ms cubic-bezier(0.22, 1, 0.36, 1), top 160ms cubic-bezier(0.22, 1, 0.36, 1), width 120ms ease, height 120ms ease, border-color 150ms ease',
+          : 'left 160ms cubic-bezier(0.22, 1, 0.36, 1), top 160ms cubic-bezier(0.22, 1, 0.36, 1), width 120ms ease, height 120ms ease',
         willChange: isActivelyDragged ? 'transform' : undefined,
-        zIndex: isActivelyDragged ? 34 : isSelected || isResizing ? 4 : 2,
+        zIndex: isActivelyDragged ? 36 : 28,
       }}
       className="pointer-events-none select-none"
     >
-      {/* Top-left floating/integrated section header pill */}
+      {/* Bottom-right floating title pill */}
       <div
         onPointerDown={
           editMode
@@ -125,10 +199,12 @@ export function ZoneCard({
         }
         onContextMenu={editMode ? handleZoneContextMenu : undefined}
         style={{
-          borderColor: `color-mix(in srgb, ${accent} 28%, var(--border-hair))`,
+          borderColor: `color-mix(in srgb, ${box.accent} 28%, var(--border-hair))`,
         }}
-        className={`absolute -top-3.5 left-4 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold bg-[var(--bg-card)]/94 backdrop-blur-xs border shadow-xs max-w-[calc(100%-32px)] ${
-          editMode ? 'pointer-events-auto cursor-grab active:cursor-grabbing' : 'pointer-events-none'
+        className={`absolute inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold bg-[var(--bg-card)]/92 backdrop-blur-md border shadow-sm ${
+          editMode
+            ? 'bottom-1.5 right-7.5 max-w-[calc(100%-46px)] pointer-events-auto cursor-grab active:cursor-grabbing'
+            : 'bottom-2 right-2.5 max-w-[calc(100%-20px)] pointer-events-none'
         }`}
         title={
           editMode
@@ -138,9 +214,9 @@ export function ZoneCard({
       >
         <span
           className="h-2 w-2 rounded-full shrink-0"
-          style={{ backgroundColor: zone.isPrivate ? '#ff5500' : accent }}
+          style={{ backgroundColor: zone.isPrivate ? '#ff5500' : box.accent }}
         />
-        {zone.isPrivate && <Lock size={11} className="text-amber-500 shrink-0" />}
+        {zone.isPrivate && <Lock size={10} className="text-amber-500 shrink-0" />}
         <span className="truncate text-[var(--ink-main)]">{zone.title}</span>
         {editMode && (
           <button
@@ -150,15 +226,15 @@ export function ZoneCard({
               e.stopPropagation();
               onEditZone(zone);
             }}
-            className="ml-0.5 h-4.5 w-4.5 rounded-full inline-flex items-center justify-center text-[var(--ink-muted)] hover:text-[var(--ink-main)] hover:bg-[var(--bg-subtle)] cursor-pointer shrink-0"
+            className="ml-0.5 h-4 w-4 rounded-full inline-flex items-center justify-center text-[var(--ink-muted)] hover:text-[var(--ink-main)] hover:bg-[var(--bg-subtle)] cursor-pointer shrink-0"
             title="编辑分区框"
           >
-            <Pencil size={10} />
+            <Pencil size={9.5} />
           </button>
         )}
       </div>
 
-      {/* Edit-mode border hit strips so users can grab or right-click any edge of the Zone */}
+      {/* Edit-mode 8px perimeter hit strips + bottom-right integer resize handle */}
       {editMode && (
         <>
           <div
@@ -168,22 +244,22 @@ export function ZoneCard({
               onEditZone(zone);
             }}
             onContextMenu={handleZoneContextMenu}
-            className="pointer-events-auto absolute top-0 left-3 right-3 h-2.5 cursor-grab active:cursor-grabbing"
+            className="pointer-events-auto absolute top-0 left-3 right-3 h-2 cursor-grab active:cursor-grabbing"
           />
           <div
             onPointerDown={(e) => onZonePointerDown(e, zone)}
             onContextMenu={handleZoneContextMenu}
-            className="pointer-events-auto absolute bottom-0 left-3 right-6 h-2.5 cursor-grab active:cursor-grabbing"
+            className="pointer-events-auto absolute bottom-0 left-3 right-8 h-2 cursor-grab active:cursor-grabbing"
           />
           <div
             onPointerDown={(e) => onZonePointerDown(e, zone)}
             onContextMenu={handleZoneContextMenu}
-            className="pointer-events-auto absolute top-3 bottom-3 left-0 w-2.5 cursor-grab active:cursor-grabbing"
+            className="pointer-events-auto absolute top-3 bottom-3 left-0 w-2 cursor-grab active:cursor-grabbing"
           />
           <div
             onPointerDown={(e) => onZonePointerDown(e, zone)}
             onContextMenu={handleZoneContextMenu}
-            className="pointer-events-auto absolute top-3 bottom-6 right-0 w-2.5 cursor-grab active:cursor-grabbing"
+            className="pointer-events-auto absolute top-3 bottom-8 right-0 w-2 cursor-grab active:cursor-grabbing"
           />
 
           <button
@@ -194,12 +270,12 @@ export function ZoneCard({
               onZoneResizePointerDown(e, zone);
             }}
             onClick={(e) => e.stopPropagation()}
-            className={`pointer-events-auto absolute bottom-2 right-2 z-20 h-5 w-5 rounded-md flex items-center justify-center cursor-nwse-resize transition-colors ${
+            className={`pointer-events-auto absolute bottom-1.5 right-1.5 z-20 h-5 w-5 rounded-md flex items-center justify-center cursor-nwse-resize transition-colors ${
               isResizing
                 ? 'bg-[var(--accent-orange)] text-white'
-                : 'bg-[var(--bg-card)]/90 text-[var(--ink-muted)] hover:bg-[var(--accent-orange)] hover:text-white border border-[var(--border-hair)] shadow-xs'
+                : 'bg-[var(--bg-card)]/92 text-[var(--ink-muted)] hover:bg-[var(--accent-orange)] hover:text-white border border-[var(--border-hair)] shadow-xs'
             }`}
-            title="拖拽角标调整分区范围（0.25 格步进）"
+            title="拖拽角标调整分区范围（整格步进）"
           >
             <svg width="9" height="9" viewBox="0 0 10 10" fill="none" aria-hidden="true">
               <path

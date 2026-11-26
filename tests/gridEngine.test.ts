@@ -2,12 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { GridEntity } from '../shared/gridEngine.js';
 import {
+  clampZoneSize,
   findNearestFreeSlot,
   isEntityInsideZone,
+  isValidZoneSize,
   solveMove,
   solveMoveZoneGroup,
   solvePlaceExternalItem,
   solveResize,
+  validateCanvasDocument,
   validateEntities,
   validateNoOverlaps,
 } from '../shared/gridEngine.js';
@@ -292,4 +295,54 @@ test('v4 solveMoveZoneGroup: clamps zone group cleanly against external cards', 
   assert.equal(findEntity(res.entities, 'in-card').x, 0.5);
   assert.equal(findEntity(res.entities, 'ext-card').x, 1.5);
   assert.equal(validateNoOverlaps(res.entities).valid, true);
+});
+
+test('v4 zones: isValidZoneSize accepts integers 1..40 (including 3x1), rejects decimals, allows 0.25 x/y', () => {
+  assert.equal(isValidZoneSize(1), true);
+  assert.equal(isValidZoneSize(3), true);
+  assert.equal(isValidZoneSize(40), true);
+  assert.equal(isValidZoneSize(3.5), false);
+  assert.equal(isValidZoneSize(0), false);
+  assert.equal(isValidZoneSize(41), false);
+  assert.equal(clampZoneSize(10.5), 11);
+  assert.equal(clampZoneSize(0.25), 1);
+
+  const now = new Date().toISOString();
+  const valid3x1 = validateCanvasDocument({
+    folders: [],
+    items: [],
+    zones: [
+      {
+        id: 'z-row',
+        title: '单行分区',
+        x: -0.25,
+        y: 0.25,
+        w: 3,
+        h: 1,
+        isPrivate: false,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+  });
+  assert.equal(valid3x1.valid, true);
+
+  const invalidDecimal = validateCanvasDocument({
+    folders: [],
+    items: [],
+    zones: [
+      {
+        id: 'z-dec',
+        title: '小数分区',
+        x: 0,
+        y: 0,
+        w: 3.5,
+        h: 2,
+        isPrivate: false,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+  });
+  assert.equal(invalidDecimal.valid, false);
 });

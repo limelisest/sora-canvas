@@ -13,7 +13,7 @@ import type {
   ZoneContainer,
 } from '../shared/types.js';
 import { normalizeSiteSettings } from '../shared/settings.js';
-import { isEntityInsideZone, validateCanvasDocument } from '../shared/gridEngine.js';
+import { clampZoneSize, isEntityInsideZone, validateCanvasDocument } from '../shared/gridEngine.js';
 
 const MAX_HISTORY_SNAPSHOTS = 30;
 const SNAPSHOT_COALESCE_MS = 5 * 60 * 1000;
@@ -487,10 +487,19 @@ export function normalizeDocument(
       return f;
     });
     const zones: ZoneContainer[] = Array.isArray(rawDoc.zones)
-      ? rawDoc.zones.map((z) => ({
-          ...z,
-          isPrivate: Boolean(z.isPrivate),
-        }))
+      ? rawDoc.zones.map((z) => {
+          const nextW = clampZoneSize(typeof z.w === 'number' && Number.isFinite(z.w) ? z.w : 4);
+          const nextH = clampZoneSize(typeof z.h === 'number' && Number.isFinite(z.h) ? z.h : 2);
+          if (z.w !== nextW || z.h !== nextH) {
+            modeMigrated = true;
+          }
+          return {
+            ...z,
+            w: nextW,
+            h: nextH,
+            isPrivate: Boolean(z.isPrivate),
+          };
+        })
       : [];
     const widgets: CanvasWidget[] = Array.isArray(rawDoc.widgets) ? rawDoc.widgets : [];
     return {

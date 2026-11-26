@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../server/app.js';
+import { normalizeDocument } from '../server/store.js';
 
 let tmpDir: string;
 let app: FastifyInstance;
@@ -944,7 +945,7 @@ test('v4 quarter-grid, private zones isolation, image uploads, and carousel/text
           x: -0.25,
           y: -0.25,
           w: 4,
-          h: 3.5,
+          h: 3,
           isPrivate: false,
           createdAt: now,
           updatedAt: now,
@@ -1084,6 +1085,70 @@ test('v4 quarter-grid, private zones isolation, image uploads, and carousel/text
       payload: v4Payload,
     });
     assert.equal(unauthNoteEdit.statusCode, 401);
+
+    // 6. Legacy decimal zone sizes migrate smoothly on normalizeDocument, while PUT rejects decimals with 409
+    const migrated = normalizeDocument({
+      version: 2,
+      updatedAt: now,
+      grid: { cellSize: 108, gap: 14 },
+      folders: [],
+      items: [],
+      zones: [
+        {
+          id: 'legacy-dec-zone',
+          title: '旧版小数分区',
+          x: 0.25,
+          y: -0.25,
+          w: 10.5,
+          h: 2.5,
+          isPrivate: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          id: 'tiny-zone',
+          title: '极小分区',
+          x: 0,
+          y: 0,
+          w: 0.5,
+          h: 1.2,
+          isPrivate: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      widgets: [],
+    });
+    assert.ok(migrated);
+    assert.equal(migrated.migrated, true);
+    assert.equal(migrated.doc.zones?.[0].w, 11);
+    assert.equal(migrated.doc.zones?.[0].h, 3);
+    assert.equal(migrated.doc.zones?.[1].w, 1);
+    assert.equal(migrated.doc.zones?.[1].h, 1);
+
+    const decimalZonePut = await isolatedApp.inject({
+      method: 'PUT',
+      url: '/api/canvas',
+      headers: authHeaders,
+      payload: {
+        folders: [],
+        items: [],
+        zones: [
+          {
+            id: 'bad-dec-zone',
+            title: 'Bad',
+            x: 0,
+            y: 0,
+            w: 3.5,
+            h: 2,
+            isPrivate: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+      },
+    });
+    assert.equal(decimalZonePut.statusCode, 409);
   } finally {
     await isolatedApp.close();
     await fs.rm(isolatedDir, { recursive: true, force: true });

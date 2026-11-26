@@ -22,9 +22,8 @@ import type {
 } from '../../shared/types';
 import {
   clampGridSize,
+  clampZoneSize,
   isEntityInsideZone,
-  MAX_ZONE_SIZE,
-  MIN_ZONE_SIZE,
   rectsOverlap,
   snapQuarter,
   solveMove,
@@ -36,7 +35,7 @@ import { MAX_VIEW_SCALE, MIN_VIEW_SCALE } from '../utils/viewport';
 import { CanvasCard, type ContextMenuTarget } from './CanvasCard';
 import { IconGlyph } from './IconGlyph';
 import { FreeTextCard } from './WidgetCard';
-import { ZoneCard } from './ZoneCard';
+import { ZoneCard, ZoneOverlay } from './ZoneCard';
 
 export interface InfiniteCanvasHandle {
   startModalChildPointerDown: (
@@ -1272,13 +1271,13 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
         return;
       }
 
-      // Handle Zone Resize (0.25 step, 2..40)
+      // Handle Zone Resize (integer step, 1..40)
       if (zoneResize) {
         const viewScale = viewRef.current.scale;
-        const dxGrid = snapQuarter((e.clientX - zoneResize.startX) / (step * viewScale));
-        const dyGrid = snapQuarter((e.clientY - zoneResize.startY) / (step * viewScale));
-        const nextW = Math.max(MIN_ZONE_SIZE, Math.min(MAX_ZONE_SIZE, snapQuarter(zoneResize.startW + dxGrid)));
-        const nextH = Math.max(MIN_ZONE_SIZE, Math.min(MAX_ZONE_SIZE, snapQuarter(zoneResize.startH + dyGrid)));
+        const dxGrid = Math.round((e.clientX - zoneResize.startX) / (step * viewScale));
+        const dyGrid = Math.round((e.clientY - zoneResize.startY) / (step * viewScale));
+        const nextW = clampZoneSize(zoneResize.startW + dxGrid);
+        const nextH = clampZoneSize(zoneResize.startH + dyGrid);
         if (nextW === zoneResize.targetW && nextH === zoneResize.targetH) return;
         setZoneResize({ ...zoneResize, targetW: nextW, targetH: nextH });
         return;
@@ -1303,10 +1302,11 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
         const dxPx = (e.clientX - zoneDrag.startX) / viewScale;
         const dyPx = (e.clientY - zoneDrag.startY) / viewScale;
         if (zoneDrag.started && containerRef.current) {
-          const zEl = containerRef.current.querySelector<HTMLElement>(
-            `[data-zone-id="${CSS.escape(zoneDrag.zone.id)}"]`
-          );
-          if (zEl) zEl.style.transform = `translate3d(${dxPx}px, ${dyPx}px, 0)`;
+          containerRef.current
+            .querySelectorAll<HTMLElement>(`[data-zone-id="${CSS.escape(zoneDrag.zone.id)}"]`)
+            .forEach((zEl) => {
+              zEl.style.transform = `translate3d(${dxPx}px, ${dyPx}px, 0)`;
+            });
           for (const id of zoneDrag.movingForegroundIds) {
             const cEl = containerRef.current.querySelector<HTMLElement>(
               `[data-entity-id="${CSS.escape(id)}"]`
@@ -2311,7 +2311,7 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
             top: 0,
           }}
         >
-          {/* Background Zone Frame Layer (zIndex: 2..4) */}
+          {/* Background Zone Frame Layer (zIndex: 2..4 / 34) */}
           {renderedZones.map((zone) => {
             const isZoneDragging = zoneDrag?.started && zoneDrag.zone.id === zone.id;
             return (
@@ -2319,15 +2319,10 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
                 key={zone.id}
                 zone={zone}
                 grid={grid}
-                editMode={editMode}
                 isSelected={selectedIds.includes(zone.id)}
                 isResizing={zoneResize?.zoneId === zone.id}
                 isError={Boolean(isZoneDragging && zoneDrag?.errorMsg)}
                 dragOffset={isZoneDragging ? zoneOnlyDragOffset : null}
-                onZonePointerDown={handleZonePointerDown}
-                onZoneResizePointerDown={handleZoneResizePointerDown}
-                onEditZone={onEditZone}
-                onOpenContextMenu={onOpenContextMenu}
               />
             );
           })}
@@ -2451,6 +2446,25 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
                 onTextPointerDown={handleTextPointerDown}
                 onTextResizePointerDown={handleTextResizePointerDown}
                 onEditText={(w) => onEditWidget(w)}
+                onOpenContextMenu={onOpenContextMenu}
+              />
+            );
+          })}
+
+          {/* Top Zone Overlay Layer (zIndex: 28 / 36): bottom-right floating title pill + edit handles */}
+          {renderedZones.map((zone) => {
+            const isZoneDragging = zoneDrag?.started && zoneDrag.zone.id === zone.id;
+            return (
+              <ZoneOverlay
+                key={`overlay-${zone.id}`}
+                zone={zone}
+                grid={grid}
+                editMode={editMode}
+                isResizing={zoneResize?.zoneId === zone.id}
+                dragOffset={isZoneDragging ? zoneOnlyDragOffset : null}
+                onZonePointerDown={handleZonePointerDown}
+                onZoneResizePointerDown={handleZoneResizePointerDown}
+                onEditZone={onEditZone}
                 onOpenContextMenu={onOpenContextMenu}
               />
             );

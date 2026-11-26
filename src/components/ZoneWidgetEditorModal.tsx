@@ -19,7 +19,7 @@ import type {
   NoteWidget,
   ZoneContainer,
 } from '../../shared/types';
-import { MAX_ZONE_SIZE, MIN_ZONE_SIZE, snapQuarter } from '../../shared/gridEngine';
+import { clampZoneSize, snapQuarter } from '../../shared/gridEngine';
 import { uploadImageApi } from '../api';
 
 export type ZoneWidgetEditorDraft =
@@ -113,7 +113,7 @@ export function ZoneWidgetEditorModal({
   const [zoneAccent, setZoneAccent] = useState('#64748b');
   const [zonePrivate, setZonePrivate] = useState(false);
   const [zoneW, setZoneW] = useState(4);
-  const [zoneH, setZoneH] = useState(3);
+  const [zoneH, setZoneH] = useState(2);
 
   // Carousel fields
   const [carTitle, setCarTitle] = useState('');
@@ -153,7 +153,7 @@ export function ZoneWidgetEditorModal({
       setZoneAccent('#64748b');
       setZonePrivate(false);
       setZoneW(4);
-      setZoneH(3);
+      setZoneH(2);
     } else if (draft.mode === 'edit-zone') {
       setZoneTitle(draft.zone.title);
       setZoneAccent(draft.zone.accent || '#64748b');
@@ -286,8 +286,8 @@ export function ZoneWidgetEditorModal({
         setError('请输入分区名称');
         return;
       }
-      const w = Math.max(MIN_ZONE_SIZE, Math.min(MAX_ZONE_SIZE, snapQuarter(zoneW)));
-      const h = Math.max(MIN_ZONE_SIZE, Math.min(MAX_ZONE_SIZE, snapQuarter(zoneH)));
+      const w = clampZoneSize(zoneW || 1);
+      const h = clampZoneSize(zoneH || 1);
       msg = onSave({
         kind: 'zone',
         title: zoneTitle.trim(),
@@ -423,13 +423,13 @@ export function ZoneWidgetEditorModal({
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-medium text-[var(--ink-secondary)] mb-1">
-                    宽度 (2..40 · 0.25步进)
+                    宽度 (1..40 整格)
                   </label>
                   <input
                     type="number"
-                    min={2}
+                    min={1}
                     max={40}
-                    step={0.25}
+                    step={1}
                     value={zoneW}
                     onChange={(e) => setZoneW(Number(e.target.value))}
                     className="bento-input w-full px-3 py-2 text-sm bg-[var(--bg-subtle)]"
@@ -437,13 +437,13 @@ export function ZoneWidgetEditorModal({
                 </div>
                 <div>
                   <label className="block font-medium text-[var(--ink-secondary)] mb-1">
-                    高度 (2..40 · 0.25步进)
+                    高度 (1..40 整格)
                   </label>
                   <input
                     type="number"
-                    min={2}
+                    min={1}
                     max={40}
-                    step={0.25}
+                    step={1}
                     value={zoneH}
                     onChange={(e) => setZoneH(Number(e.target.value))}
                     className="bento-input w-full px-3 py-2 text-sm bg-[var(--bg-subtle)]"
