@@ -39,6 +39,7 @@ interface ContextMenuProps {
   menu: ContextMenuState | null;
   unlocked: boolean;
   editMode: boolean;
+  hideZonePrivateToggle?: boolean;
   folders: FolderContainer[];
   onClose: () => void;
   onOpenFolder: (folder: FolderContainer) => void;
@@ -87,6 +88,7 @@ export function ContextMenu({
   menu,
   unlocked,
   editMode,
+  hideZonePrivateToggle = false,
   folders,
   onClose,
   onOpenFolder,
@@ -461,21 +463,23 @@ export function ContextMenu({
                 </div>
               </div>
 
-              <button
-                type="button"
-                className={itemClass}
-                onClick={() => {
-                  onToggleZonePrivate(target.zone);
-                  onClose();
-                }}
-              >
-                {target.zone.isPrivate ? (
-                  <Unlock size={13} className="text-amber-500" />
-                ) : (
-                  <Lock size={13} className="text-amber-500" />
-                )}
-                <span>{target.zone.isPrivate ? '设为公开分区' : '设为私密分区'}</span>
-              </button>
+              {!hideZonePrivateToggle && (
+                <button
+                  type="button"
+                  className={itemClass}
+                  onClick={() => {
+                    onToggleZonePrivate(target.zone);
+                    onClose();
+                  }}
+                >
+                  {target.zone.isPrivate ? (
+                    <Unlock size={13} className="text-amber-500" />
+                  ) : (
+                    <Lock size={13} className="text-amber-500" />
+                  )}
+                  <span>{target.zone.isPrivate ? '设为公开分区' : '设为私密分区'}</span>
+                </button>
+              )}
 
               <div className="my-1 border-t border-[var(--border-hair)]" />
               <button

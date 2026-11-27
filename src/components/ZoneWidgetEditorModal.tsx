@@ -74,6 +74,7 @@ export type ZoneWidgetSavePayload =
 
 interface ZoneWidgetEditorModalProps {
   draft: ZoneWidgetEditorDraft | null;
+  hideZonePrivateToggle?: boolean;
   onClose: () => void;
   onSave: (payload: ZoneWidgetSavePayload) => string | null;
   onDeleteZone?: (zoneId: string) => void;
@@ -93,6 +94,7 @@ const NOTE_TINTS = [
 
 export function ZoneWidgetEditorModal({
   draft,
+  hideZonePrivateToggle = false,
   onClose,
   onSave,
   onDeleteZone,
@@ -443,23 +445,25 @@ export function ZoneWidgetEditorModal({
                 </div>
               </div>
 
-              <label className="flex items-center justify-between p-3 rounded-2xl bg-[var(--bg-subtle)] border border-[var(--border-hair)] cursor-pointer">
-                <div className="flex items-center gap-2">
-                  <Lock size={14} className="text-amber-500 shrink-0" />
-                  <div>
-                    <div className="font-medium">设为私密分区</div>
-                    <div className="text-[11px] text-[var(--ink-muted)]">
-                      未解锁时，连同分区框及框内所有文件夹、书签与小部件一并隐藏
+              {!hideZonePrivateToggle && (
+                <label className="flex items-center justify-between p-3 rounded-2xl bg-[var(--bg-subtle)] border border-[var(--border-hair)] cursor-pointer">
+                  <div className="flex items-center gap-2">
+                    <Lock size={14} className="text-amber-500 shrink-0" />
+                    <div>
+                      <div className="font-medium">设为私密分区</div>
+                      <div className="text-[11px] text-[var(--ink-muted)]">
+                        未解锁时，连同分区框及框内所有文件夹、书签与小部件一并隐藏
+                      </div>
                     </div>
                   </div>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={zonePrivate}
-                  onChange={(e) => setZonePrivate(e.target.checked)}
-                  className="h-4 w-4 accent-[var(--accent-orange)]"
-                />
-              </label>
+                  <input
+                    type="checkbox"
+                    checked={zonePrivate}
+                    onChange={(e) => setZonePrivate(e.target.checked)}
+                    className="h-4 w-4 accent-[var(--accent-orange)]"
+                  />
+                </label>
+              )}
             </>
           )}
 

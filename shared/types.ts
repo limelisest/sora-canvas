@@ -160,10 +160,12 @@ export interface LayoutOverride {
   y: number;
   w: number;
   h: number;
+  displayMode?: FolderDisplayMode;
 }
 
 export interface PublicLayoutConfig {
   positions: Record<string, LayoutOverride>;
+  zones?: ZoneContainer[];
   viewportOrigin?: { x: number; y: number } | null;
 }
 

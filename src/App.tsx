@@ -210,22 +210,38 @@ export default function App() {
   );
   const dark = themeMode === 'auto' ? systemDark : themeMode === 'dark';
 
-  const [undoStack, setUndoStack] = useState<
+  const [unlockedUndoStack, setUnlockedUndoStack] = useState<
     Array<{
       folders: FolderContainer[];
       items: BookmarkItem[];
       zones: ZoneContainer[];
       widgets: CanvasWidget[];
-      publicLayout?: PublicLayoutConfig;
     }>
   >([]);
-  const [redoStack, setRedoStack] = useState<
+  const [unlockedRedoStack, setUnlockedRedoStack] = useState<
     Array<{
       folders: FolderContainer[];
       items: BookmarkItem[];
       zones: ZoneContainer[];
       widgets: CanvasWidget[];
-      publicLayout?: PublicLayoutConfig;
+    }>
+  >([]);
+  const [lockedUndoStack, setLockedUndoStack] = useState<
+    Array<{
+      folders: FolderContainer[];
+      items: BookmarkItem[];
+      zones: ZoneContainer[];
+      widgets: CanvasWidget[];
+      viewportOrigin?: { x: number; y: number } | null;
+    }>
+  >([]);
+  const [lockedRedoStack, setLockedRedoStack] = useState<
+    Array<{
+      folders: FolderContainer[];
+      items: BookmarkItem[];
+      zones: ZoneContainer[];
+      widgets: CanvasWidget[];
+      viewportOrigin?: { x: number; y: number } | null;
     }>
   >([]);
 
@@ -490,23 +506,44 @@ export default function App() {
       recordUndo = true,
       nextZones?: ZoneContainer[],
       nextWidgets?: CanvasWidget[],
-      options?: { nextPublicLayout?: PublicLayoutConfig; replaceCanonical?: boolean }
+      options?: {
+        nextPublicLayout?: PublicLayoutConfig;
+        replaceCanonical?: boolean;
+        stackTarget?: EditLayoutTarget;
+      }
     ) => {
       const prevDoc = docRef.current;
       const curZones = prevDoc.zones ?? [];
       const curWidgets = prevDoc.widgets ?? [];
       if (recordUndo) {
-        setUndoStack((s) => [
-          ...s.slice(-29),
-          {
-            folders: prevDoc.folders,
-            items: prevDoc.items,
-            zones: curZones,
-            widgets: curWidgets,
-            publicLayout: prevDoc.publicLayout,
-          },
-        ]);
-        setRedoStack([]);
+        const useLockedStack =
+          options?.stackTarget === 'locked' ||
+          (options?.stackTarget !== 'unlocked' && editingLockedRef.current);
+        if (useLockedStack) {
+          const prevLocked = projectPublicCanvas(prevDoc).doc;
+          setLockedUndoStack((s) => [
+            ...s.slice(-29),
+            {
+              folders: prevLocked.folders,
+              items: prevLocked.items,
+              zones: prevLocked.zones ?? [],
+              widgets: prevLocked.widgets ?? [],
+              viewportOrigin: prevDoc.publicLayout?.viewportOrigin,
+            },
+          ]);
+          setLockedRedoStack([]);
+        } else {
+          setUnlockedUndoStack((s) => [
+            ...s.slice(-29),
+            {
+              folders: prevDoc.folders,
+              items: prevDoc.items,
+              zones: curZones,
+              widgets: curWidgets,
+            },
+          ]);
+          setUnlockedRedoStack([]);
+        }
       }
 
       const now = new Date().toISOString();
@@ -654,45 +691,138 @@ export default function App() {
     [displayedDoc, commitDocState]
   );
 
+  const applyLockedSnapshot = useCallback(
+    (snap: {
+      folders: FolderContainer[];
+      items: BookmarkItem[];
+      zones: ZoneContainer[];
+      widgets: CanvasWidget[];
+      viewportOrigin?: { x: number; y: number } | null;
+    }) => {
+      const curDoc = docRef.current;
+      const merged = mergeLockedLayoutEdit(curDoc, {
+        ...curDoc,
+        folders: snap.folders,
+        items: snap.items,
+        zones: snap.zones,
+        widgets: snap.widgets,
+        publicLayout: {
+          positions: {},
+          viewportOrigin: snap.viewportOrigin ?? null,
+        },
+      });
+      const restoredPl: PublicLayoutConfig = {
+        ...(merged.publicLayout ?? { positions: {} }),
+        ...(snap.viewportOrigin !== undefined
+          ? { viewportOrigin: snap.viewportOrigin }
+          : { viewportOrigin: undefined }),
+      };
+      if (snap.viewportOrigin === undefined) {
+        delete restoredPl.viewportOrigin;
+      }
+      void commitDocState(merged.folders, merged.items, false, merged.zones, merged.widgets, {
+        nextPublicLayout: restoredPl,
+        replaceCanonical: true,
+      });
+    },
+    [commitDocState]
+  );
+
   const handleUndo = useCallback(() => {
-    if (undoStack.length === 0) return;
-    const prev = undoStack[undoStack.length - 1];
-    setUndoStack((s) => s.slice(0, -1));
-    setRedoStack((r) => [
+    if (editingLockedRef.current) {
+      if (lockedUndoStack.length === 0) return;
+      const prev = lockedUndoStack[lockedUndoStack.length - 1];
+      setLockedUndoStack((s) => s.slice(0, -1));
+      const curDoc = docRef.current;
+      const curLocked = projectPublicCanvas(curDoc).doc;
+      setLockedRedoStack((r) => [
+        ...r,
+        {
+          folders: curLocked.folders,
+          items: curLocked.items,
+          zones: curLocked.zones ?? [],
+          widgets: curLocked.widgets ?? [],
+          viewportOrigin: curDoc.publicLayout?.viewportOrigin,
+        },
+      ]);
+      applyLockedSnapshot(prev);
+      return;
+    }
+
+    if (unlockedUndoStack.length === 0) return;
+    const prev = unlockedUndoStack[unlockedUndoStack.length - 1];
+    setUnlockedUndoStack((s) => s.slice(0, -1));
+    setUnlockedRedoStack((r) => [
       ...r,
       {
         folders: doc.folders,
         items: doc.items,
         zones: doc.zones ?? [],
         widgets: doc.widgets ?? [],
-        publicLayout: doc.publicLayout,
       },
     ]);
     void commitDocState(prev.folders, prev.items, false, prev.zones, prev.widgets, {
-      nextPublicLayout: prev.publicLayout,
+      nextPublicLayout: docRef.current.publicLayout,
       replaceCanonical: true,
     });
-  }, [undoStack, doc.folders, doc.items, doc.zones, doc.widgets, doc.publicLayout, commitDocState]);
+  }, [
+    lockedUndoStack,
+    unlockedUndoStack,
+    doc.folders,
+    doc.items,
+    doc.zones,
+    doc.widgets,
+    applyLockedSnapshot,
+    commitDocState,
+  ]);
 
   const handleRedo = useCallback(() => {
-    if (redoStack.length === 0) return;
-    const next = redoStack[redoStack.length - 1];
-    setRedoStack((r) => r.slice(0, -1));
-    setUndoStack((s) => [
+    if (editingLockedRef.current) {
+      if (lockedRedoStack.length === 0) return;
+      const next = lockedRedoStack[lockedRedoStack.length - 1];
+      setLockedRedoStack((r) => r.slice(0, -1));
+      const curDoc = docRef.current;
+      const curLocked = projectPublicCanvas(curDoc).doc;
+      setLockedUndoStack((s) => [
+        ...s.slice(-29),
+        {
+          folders: curLocked.folders,
+          items: curLocked.items,
+          zones: curLocked.zones ?? [],
+          widgets: curLocked.widgets ?? [],
+          viewportOrigin: curDoc.publicLayout?.viewportOrigin,
+        },
+      ]);
+      applyLockedSnapshot(next);
+      return;
+    }
+
+    if (unlockedRedoStack.length === 0) return;
+    const next = unlockedRedoStack[unlockedRedoStack.length - 1];
+    setUnlockedRedoStack((r) => r.slice(0, -1));
+    setUnlockedUndoStack((s) => [
       ...s.slice(-29),
       {
         folders: doc.folders,
         items: doc.items,
         zones: doc.zones ?? [],
         widgets: doc.widgets ?? [],
-        publicLayout: doc.publicLayout,
       },
     ]);
     void commitDocState(next.folders, next.items, false, next.zones, next.widgets, {
-      nextPublicLayout: next.publicLayout,
+      nextPublicLayout: docRef.current.publicLayout,
       replaceCanonical: true,
     });
-  }, [redoStack, doc.folders, doc.items, doc.zones, doc.widgets, doc.publicLayout, commitDocState]);
+  }, [
+    lockedRedoStack,
+    unlockedRedoStack,
+    doc.folders,
+    doc.items,
+    doc.zones,
+    doc.widgets,
+    applyLockedSnapshot,
+    commitDocState,
+  ]);
 
   const topLevelEntities = useMemo(() => getTopLevelEntities(displayedDoc), [displayedDoc]);
 
@@ -1019,6 +1149,10 @@ export default function App() {
         setSettingsOpen(false);
         setEditMode(false);
         setLayoutTarget('unlocked');
+        setUnlockedUndoStack([]);
+        setUnlockedRedoStack([]);
+        setLockedUndoStack([]);
+        setLockedRedoStack([]);
         setMarqueeMode(false);
         setSelectedIds([]);
         setActiveFolderId(null);
@@ -1112,6 +1246,7 @@ export default function App() {
       commitDocState(prevDoc.folders, prevDoc.items, true, prevDoc.zones, prevDoc.widgets, {
         nextPublicLayout: { ...curPl, viewportOrigin: { x: wx, y: wy } },
         replaceCanonical: true,
+        stackTarget: 'locked',
       });
       showToast('已将当前屏幕中心设为「解锁前」视野锚点');
       return;
@@ -1132,6 +1267,7 @@ export default function App() {
         commitDocState(prevDoc.folders, prevDoc.items, true, prevDoc.zones, prevDoc.widgets, {
           nextPublicLayout: { ...curPl, viewportOrigin: origin },
           replaceCanonical: true,
+          stackTarget: 'locked',
         });
         showToast(`已更新「解锁前」视野锚点 (${origin.x}, ${origin.y})`);
         return;
@@ -1186,6 +1322,7 @@ export default function App() {
     commitDocState(curDoc.folders, curDoc.items, true, curDoc.zones, curDoc.widgets, {
       nextPublicLayout: syncedPl,
       replaceCanonical: true,
+      stackTarget: 'locked',
     });
     setSelectedIds([]);
     showToast('已继承解锁后公开元素排版（可按撤销恢复）');
@@ -2566,6 +2703,7 @@ export default function App() {
                 {
                   nextPublicLayout: { ...curPl, viewportOrigin: null },
                   replaceCanonical: true,
+                  stackTarget: 'locked',
                 }
               );
               showToast('已重置「解锁前」视野锚点');
@@ -2736,8 +2874,16 @@ export default function App() {
                     settings.desktopViewportMode === 'anchor' ||
                     settings.mobileViewportMode === 'anchor'
                   }
-                  canUndo={undoStack.length > 0}
-                  canRedo={redoStack.length > 0}
+                  canUndo={
+                    editingLockedLayout
+                      ? lockedUndoStack.length > 0
+                      : unlockedUndoStack.length > 0
+                  }
+                  canRedo={
+                    editingLockedLayout
+                      ? lockedRedoStack.length > 0
+                      : unlockedRedoStack.length > 0
+                  }
                   layoutTarget={layoutTarget}
                   onChangeLayoutTarget={handleSwitchLayoutTarget}
                   onSyncUnlockedToLocked={handleSyncUnlockedToLocked}
@@ -2852,6 +2998,7 @@ export default function App() {
             {!showMobilePaged && zwDraft && (
               <ZoneWidgetEditorModal
                 draft={zwDraft}
+                hideZonePrivateToggle={editingLockedLayout}
                 onClose={() => setZwDraft(null)}
                 onSave={handleSaveZoneWidget}
                 onDeleteZone={handleDeleteZone}
@@ -2890,6 +3037,7 @@ export default function App() {
                 menu={contextMenu}
                 unlocked={unlocked}
                 editMode={editMode}
+                hideZonePrivateToggle={editingLockedLayout}
                 folders={displayedDoc.folders}
                 onClose={() => setContextMenu(null)}
                 onOpenFolder={(folder) => setActiveFolderId(folder.id)}

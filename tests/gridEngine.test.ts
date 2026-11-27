@@ -16,7 +16,9 @@ import {
 } from '../shared/gridEngine.js';
 import type { CanvasDocument } from '../shared/types.js';
 import {
+  buildSyncedPublicLayoutFromCanonical,
   mergeLockedLayoutEdit,
+  normalizePublicLayout,
   projectPublicCanvas,
   reconcilePublicLayout,
 } from '../shared/dualLayout.js';
@@ -553,4 +555,139 @@ test('dualLayout: projectPublicCanvas, reconcilePublicLayout, and mergeLockedLay
   assert.ok(canonAdded.x !== 4 || canonAdded.y !== 0);
   // Existing publicLayout.viewportOrigin preserved across merge
   assert.deepEqual(merged.publicLayout?.viewportOrigin, { x: 120, y: -40 });
+});
+
+test('dualLayout: independent folder displayMode and independent publicLayout.zones (including empty zones: [])', () => {
+  const now = new Date().toISOString();
+
+  // 1. normalizePublicLayout preserves empty zones: [] even when positions & viewportOrigin are empty
+  const normalizedEmptyZones = normalizePublicLayout({ positions: {}, zones: [] });
+  assert.ok(normalizedEmptyZones);
+  assert.deepEqual(normalizedEmptyZones?.zones, []);
+
+  const canonical: CanvasDocument = {
+    version: 2,
+    updatedAt: now,
+    grid: { cellSize: 108, gap: 14 },
+    folders: [
+      {
+        id: 'f-mode',
+        title: '双模式目录',
+        x: 0,
+        y: 0,
+        w: 2,
+        h: 2,
+        displayMode: 'list',
+        isPrivate: false,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'f-in-priv-zone',
+        title: '私密分区目录',
+        x: 10,
+        y: 10,
+        w: 2,
+        h: 2,
+        displayMode: 'grid',
+        isPrivate: false,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+    items: [],
+    zones: [
+      {
+        id: 'z-unlocked-pub',
+        title: '解锁后公开分区',
+        x: 0,
+        y: 0,
+        w: 4,
+        h: 3,
+        isPrivate: false,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'z-unlocked-priv',
+        title: '解锁后私密分区',
+        x: 9,
+        y: 9,
+        w: 5,
+        h: 5,
+        isPrivate: true,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+    widgets: [],
+  };
+
+  // 2. Edit locked view: switch f-mode to 'grid', delete canonical public zone and create a locked-only zone
+  const initLockedProj = projectPublicCanvas(canonical).doc;
+  const lockedWithZone = mergeLockedLayoutEdit(canonical, {
+    ...initLockedProj,
+    folders: initLockedProj.folders.map((f) =>
+      f.id === 'f-mode' ? { ...f, displayMode: 'grid' } : f
+    ),
+    zones: [
+      {
+        id: 'z-locked-only',
+        title: '访客专属分区',
+        x: 1,
+        y: 1,
+        w: 6,
+        h: 4,
+        isPrivate: true, // should be forced false in publicLayout.zones
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+  });
+
+  // Canonical displayMode remains 'list', canonical zones remain completely untouched
+  assert.equal(lockedWithZone.folders.find((f) => f.id === 'f-mode')?.displayMode, 'list');
+  assert.deepEqual(
+    (lockedWithZone.zones ?? []).map((z) => z.id),
+    ['z-unlocked-pub', 'z-unlocked-priv']
+  );
+
+  // Projected public view sees 'grid' and ONLY z-locked-only (with isPrivate: false); f-in-priv-zone still filtered by canonical private zone
+  const pub1 = projectPublicCanvas(lockedWithZone);
+  assert.equal(pub1.doc.folders.length, 1);
+  assert.equal(pub1.doc.folders[0].displayMode, 'grid');
+  assert.deepEqual(
+    (pub1.doc.zones ?? []).map((z) => ({ id: z.id, title: z.title, isPrivate: z.isPrivate })),
+    [{ id: 'z-locked-only', title: '访客专属分区', isPrivate: false }]
+  );
+
+  // 3. Editing canonical zones afterward does NOT overwrite customized publicLayout.zones
+  const unlockedZoneEdited = reconcilePublicLayout({
+    ...lockedWithZone,
+    zones: (lockedWithZone.zones ?? []).map((z) =>
+      z.id === 'z-unlocked-pub' ? { ...z, title: '解锁后改名分区' } : z
+    ),
+  });
+  const pub2 = projectPublicCanvas(unlockedZoneEdited);
+  assert.deepEqual(
+    (pub2.doc.zones ?? []).map((z) => z.id),
+    ['z-locked-only']
+  );
+
+  // 4. Deleting all zones in locked layout persists zones: [] and does NOT fall back to canonical zones
+  const lockedClearedZones = mergeLockedLayoutEdit(unlockedZoneEdited, {
+    ...pub2.doc,
+    zones: [],
+  });
+  assert.deepEqual(lockedClearedZones.publicLayout?.zones, []);
+  assert.equal((unlockedZoneEdited.zones ?? []).length, 2);
+  assert.equal((projectPublicCanvas(lockedClearedZones).doc.zones ?? []).length, 0);
+
+  // 5. buildSyncedPublicLayoutFromCanonical copies displayMode and canonical public zones (excluding private zone)
+  const syncedPl = buildSyncedPublicLayoutFromCanonical(unlockedZoneEdited);
+  assert.equal(syncedPl.positions['f-mode']?.displayMode, 'list');
+  assert.deepEqual(
+    (syncedPl.zones ?? []).map((z) => ({ id: z.id, title: z.title })),
+    [{ id: 'z-unlocked-pub', title: '解锁后改名分区' }]
+  );
 });

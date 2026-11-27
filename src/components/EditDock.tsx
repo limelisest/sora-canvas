@@ -339,18 +339,20 @@ export function EditDock({
                 onSetZoneAccent(selectedTarget.zone, hex)
               )}
               {divider}
-              <button
-                type="button"
-                onClick={() => onToggleZonePrivate(selectedTarget.zone)}
-                className={chipBtn}
-              >
-                {selectedTarget.zone.isPrivate ? (
-                  <Unlock size={12} className="text-amber-500" />
-                ) : (
-                  <Lock size={12} className="text-amber-500" />
-                )}
-                <span>{selectedTarget.zone.isPrivate ? '公开' : '私密'}</span>
-              </button>
+              {layoutTarget !== 'locked' && (
+                <button
+                  type="button"
+                  onClick={() => onToggleZonePrivate(selectedTarget.zone)}
+                  className={chipBtn}
+                >
+                  {selectedTarget.zone.isPrivate ? (
+                    <Unlock size={12} className="text-amber-500" />
+                  ) : (
+                    <Lock size={12} className="text-amber-500" />
+                  )}
+                  <span>{selectedTarget.zone.isPrivate ? '公开' : '私密'}</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => onStartInlineEdit(selectedTarget.zone.id)}
@@ -684,7 +686,7 @@ export function EditDock({
         )}
 
         <span className="hidden sm:inline text-[10.5px] text-[var(--ink-muted)] pl-1 pr-1">
-          仅位置/尺寸与锚点独立，书签内容全局同步
+          位置/尺寸、宫格列表、分区与锚点各自独立，书签内容同步
         </span>
       </div>
 

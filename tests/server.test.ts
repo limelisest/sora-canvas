@@ -1665,3 +1665,142 @@ test('dual layout: separate unlocked/locked coords & viewportOrigin, zero leak w
     await fs.rm(dirB, { recursive: true, force: true });
   }
 });
+
+test('dual layout persistence & backup preserve independent folder displayMode and publicLayout.zones (including empty)', async () => {
+  const dirA = await fs.mkdtemp(path.join(os.tmpdir(), 'neko-dualz-a-'));
+  const dirB = await fs.mkdtemp(path.join(os.tmpdir(), 'neko-dualz-b-'));
+  const appA = await buildApp({ dataDir: dirA, password: 'pwA', serveStatic: false });
+  const appB = await buildApp({ dataDir: dirB, password: 'pwB', serveStatic: false });
+  const now = new Date().toISOString();
+
+  try {
+    const unlockA = await appA.inject({
+      method: 'POST',
+      url: '/api/auth/unlock',
+      payload: { password: 'pwA' },
+    });
+    const cookieA = unlockA.headers['set-cookie'] as string;
+
+    const unlockB = await appB.inject({
+      method: 'POST',
+      url: '/api/auth/unlock',
+      payload: { password: 'pwB' },
+    });
+    const cookieB = unlockB.headers['set-cookie'] as string;
+
+    const putRes = await appA.inject({
+      method: 'PUT',
+      url: '/api/canvas',
+      headers: { cookie: cookieA },
+      payload: {
+        folders: [
+          {
+            id: 'f-dm',
+            title: '模式独立目录',
+            x: 0,
+            y: 0,
+            w: 2,
+            h: 2,
+            displayMode: 'list',
+            isPrivate: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+        items: [],
+        zones: [
+          {
+            id: 'z-unlocked-only',
+            title: '解锁后分区',
+            x: 0,
+            y: 0,
+            w: 4,
+            h: 3,
+            isPrivate: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+        widgets: [],
+        publicLayout: {
+          positions: {
+            'f-dm': { x: 4, y: 2, w: 3, h: 2, displayMode: 'grid' },
+          },
+          zones: [
+            {
+              id: 'z-locked-custom',
+              title: '解锁前独立分区',
+              x: 4,
+              y: 2,
+              w: 5,
+              h: 4,
+              isPrivate: false,
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
+        },
+      },
+    });
+    assert.equal(putRes.statusCode, 200);
+
+    // Export and import into fresh instance B
+    const exportRes = await appA.inject({
+      method: 'GET',
+      url: '/api/backup/export',
+      headers: { cookie: cookieA },
+    });
+    assert.equal(exportRes.statusCode, 200);
+
+    const importRes = await appB.inject({
+      method: 'POST',
+      url: '/api/backup/import',
+      headers: { cookie: cookieB },
+      payload: exportRes.json(),
+    });
+    assert.equal(importRes.statusCode, 200);
+
+    const anonB = (await appB.inject({ method: 'GET', url: '/api/canvas' })).json();
+    assert.equal(anonB.folders[0].displayMode, 'grid');
+    assert.deepEqual(
+      anonB.zones.map((z: { id: string; title: string }) => ({ id: z.id, title: z.title })),
+      [{ id: 'z-locked-custom', title: '解锁前独立分区' }]
+    );
+
+    const authedB = (
+      await appB.inject({ method: 'GET', url: '/api/canvas', headers: { cookie: cookieB } })
+    ).json();
+    assert.equal(authedB.folders[0].displayMode, 'list');
+    assert.deepEqual(
+      authedB.zones.map((z: { id: string; title: string }) => ({ id: z.id, title: z.title })),
+      [{ id: 'z-unlocked-only', title: '解锁后分区' }]
+    );
+
+    // Clearing locked zones to [] via PUT persists empty zones without falling back to unlocked zones
+    const clearPut = await appB.inject({
+      method: 'PUT',
+      url: '/api/canvas',
+      headers: { cookie: cookieB },
+      payload: {
+        ...authedB,
+        publicLayout: {
+          ...authedB.publicLayout,
+          zones: [],
+        },
+      },
+    });
+    assert.equal(clearPut.statusCode, 200);
+
+    const anonBAfterClear = (await appB.inject({ method: 'GET', url: '/api/canvas' })).json();
+    assert.deepEqual(anonBAfterClear.zones, []);
+    const authedBAfterClear = (
+      await appB.inject({ method: 'GET', url: '/api/canvas', headers: { cookie: cookieB } })
+    ).json();
+    assert.equal(authedBAfterClear.zones.length, 1);
+  } finally {
+    await appA.close();
+    await appB.close();
+    await fs.rm(dirA, { recursive: true, force: true });
+    await fs.rm(dirB, { recursive: true, force: true });
+  }
+});

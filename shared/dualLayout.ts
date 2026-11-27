@@ -1,15 +1,16 @@
 import type {
   BookmarkItem,
   CanvasDocument,
-  CanvasGridEntity,
   CanvasWidget,
   FolderContainer,
+  FolderDisplayMode,
   FreeTextWidget,
   LayoutOverride,
   PublicLayoutConfig,
   ZoneContainer,
 } from './types.js';
 import {
+  clampZoneSize,
   findNearestFreeSlot,
   getTopLevelEntities,
   isEntityInsideZone,
@@ -72,11 +73,37 @@ function parseOverride(raw: unknown): LayoutOverride | null {
     return null;
   }
   if (o.w < 1 || o.w > 40 || o.h < 0.75 || o.h > 40) return null;
+  const displayMode: FolderDisplayMode | undefined =
+    o.displayMode === 'grid' || o.displayMode === 'list' ? o.displayMode : undefined;
   return {
     x: snapQuarter(o.x),
     y: snapQuarter(o.y),
     w: snapQuarter(o.w),
     h: snapQuarter(o.h),
+    ...(displayMode ? { displayMode } : {}),
+  };
+}
+
+function normalizePublicZone(raw: unknown): ZoneContainer | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const z = raw as Record<string, unknown>;
+  if (typeof z.id !== 'string' || !z.id.trim()) return null;
+  const now = new Date().toISOString();
+  const x = typeof z.x === 'number' && Number.isFinite(z.x) ? snapQuarter(z.x) : 0;
+  const y = typeof z.y === 'number' && Number.isFinite(z.y) ? snapQuarter(z.y) : 0;
+  const w = typeof z.w === 'number' && Number.isFinite(z.w) ? clampZoneSize(z.w) : 4;
+  const h = typeof z.h === 'number' && Number.isFinite(z.h) ? clampZoneSize(z.h) : 2;
+  return {
+    id: z.id.trim(),
+    title: typeof z.title === 'string' ? z.title : '新分区',
+    x,
+    y,
+    w,
+    h,
+    ...(typeof z.accent === 'string' && z.accent ? { accent: z.accent } : {}),
+    isPrivate: false,
+    createdAt: typeof z.createdAt === 'string' && z.createdAt ? z.createdAt : now,
+    updatedAt: typeof z.updatedAt === 'string' && z.updatedAt ? z.updatedAt : now,
   };
 }
 
@@ -95,6 +122,18 @@ export function normalizePublicLayout(raw: unknown): PublicLayoutConfig | undefi
     }
   }
 
+  let zones: ZoneContainer[] | undefined = undefined;
+  if (Array.isArray(obj.zones)) {
+    const seen = new Set<string>();
+    zones = [];
+    for (const rawZ of obj.zones) {
+      const normalized = normalizePublicZone(rawZ);
+      if (!normalized || seen.has(normalized.id)) continue;
+      seen.add(normalized.id);
+      zones.push(normalized);
+    }
+  }
+
   let viewportOrigin: { x: number; y: number } | null | undefined = undefined;
   if (obj.viewportOrigin === null) {
     viewportOrigin = null;
@@ -110,12 +149,13 @@ export function normalizePublicLayout(raw: unknown): PublicLayoutConfig | undefi
     }
   }
 
-  if (Object.keys(positions).length === 0 && viewportOrigin === undefined) {
+  if (Object.keys(positions).length === 0 && viewportOrigin === undefined && zones === undefined) {
     return undefined;
   }
 
   return {
     positions,
+    ...(zones !== undefined ? { zones } : {}),
     ...(viewportOrigin !== undefined ? { viewportOrigin } : {}),
   };
 }
@@ -272,12 +312,15 @@ export function projectPublicCanvas(doc: CanvasDocument): ProjectedPublicCanvas 
   const parts = filterPublicDocParts(doc);
   const positions = doc.publicLayout?.positions ?? {};
 
-  const zones = parts.zones.map((z) => {
-    const ov = positions[z.id];
-    return ov && isValidZoneOverride(ov)
-      ? { ...z, x: ov.x, y: ov.y, w: ov.w, h: ov.h }
-      : z;
-  });
+  const zones: ZoneContainer[] =
+    doc.publicLayout?.zones !== undefined
+      ? doc.publicLayout.zones.map((z) => ({ ...z, isPrivate: false }))
+      : parts.zones.map((z) => {
+          const ov = positions[z.id];
+          return ov && isValidZoneOverride(ov)
+            ? { ...z, x: ov.x, y: ov.y, w: ov.w, h: ov.h }
+            : z;
+        });
 
   const { placedMap } = computePublicGridPlacements(
     parts.folders,
@@ -288,7 +331,10 @@ export function projectPublicCanvas(doc: CanvasDocument): ProjectedPublicCanvas 
 
   const folders = parts.folders.map((f) => {
     const r = placedMap.get(f.id);
-    return r ? { ...f, x: r.x, y: r.y, w: r.w, h: r.h } : f;
+    const ov = positions[f.id];
+    const displayMode =
+      ov?.displayMode === 'grid' || ov?.displayMode === 'list' ? ov.displayMode : f.displayMode;
+    return r ? { ...f, x: r.x, y: r.y, w: r.w, h: r.h, displayMode } : { ...f, displayMode };
   });
 
   const items = parts.items.map((it) => {
@@ -334,26 +380,44 @@ export function reconcilePublicLayout(doc: CanvasDocument): CanvasDocument {
   const rawPositions = doc.publicLayout?.positions ?? {};
   const nextPositions: Record<string, LayoutOverride> = {};
 
-  for (const z of parts.zones) {
-    const ov = rawPositions[z.id];
-    if (ov && isValidZoneOverride(ov)) nextPositions[z.id] = { ...ov };
+  if (doc.publicLayout?.zones === undefined) {
+    for (const z of parts.zones) {
+      const ov = rawPositions[z.id];
+      if (ov && isValidZoneOverride(ov)) {
+        nextPositions[z.id] = { x: ov.x, y: ov.y, w: ov.w, h: ov.h };
+      }
+    }
   }
   for (const f of parts.folders) {
     const ov = rawPositions[f.id];
-    if (ov && isValidGridOverride(ov)) nextPositions[f.id] = { ...ov };
+    if (ov && isValidGridOverride(ov)) {
+      nextPositions[f.id] = {
+        x: ov.x,
+        y: ov.y,
+        w: ov.w,
+        h: ov.h,
+        ...(ov.displayMode === 'grid' || ov.displayMode === 'list'
+          ? { displayMode: ov.displayMode }
+          : {}),
+      };
+    }
   }
   for (const it of parts.items) {
     if (it.parentId !== null) continue;
     const ov = rawPositions[it.id];
-    if (ov && isValidGridOverride(ov)) nextPositions[it.id] = { ...ov };
+    if (ov && isValidGridOverride(ov)) {
+      nextPositions[it.id] = { x: ov.x, y: ov.y, w: ov.w, h: ov.h };
+    }
   }
   for (const w of parts.widgets) {
     const ov = rawPositions[w.id];
     if (!ov) continue;
     if (w.kind === 'text') {
-      if (isValidTextOverride(ov)) nextPositions[w.id] = { ...ov };
+      if (isValidTextOverride(ov)) {
+        nextPositions[w.id] = { x: ov.x, y: ov.y, w: ov.w, h: ov.h };
+      }
     } else if (isValidGridOverride(ov)) {
-      nextPositions[w.id] = { ...ov };
+      nextPositions[w.id] = { x: ov.x, y: ov.y, w: ov.w, h: ov.h };
     }
   }
 
@@ -373,8 +437,27 @@ export function reconcilePublicLayout(doc: CanvasDocument): CanvasDocument {
     }
   }
 
+  let nextZones: ZoneContainer[] | undefined = undefined;
+  if (doc.publicLayout?.zones !== undefined) {
+    const reservedEntityIds = new Set<string>([
+      ...doc.folders.map((f) => f.id),
+      ...doc.items.map((i) => i.id),
+      ...(doc.widgets ?? []).map((w) => w.id),
+    ]);
+    const seenZoneIds = new Set<string>();
+    nextZones = [];
+    for (const rawZ of doc.publicLayout.zones) {
+      const normalized = normalizePublicZone(rawZ);
+      if (!normalized) continue;
+      if (reservedEntityIds.has(normalized.id) || seenZoneIds.has(normalized.id)) continue;
+      seenZoneIds.add(normalized.id);
+      nextZones.push(normalized);
+    }
+  }
+
   const hasViewportOrigin = doc.publicLayout?.viewportOrigin !== undefined;
-  if (Object.keys(nextPositions).length === 0 && !hasViewportOrigin) {
+  const hasZones = nextZones !== undefined;
+  if (Object.keys(nextPositions).length === 0 && !hasViewportOrigin && !hasZones) {
     if (!doc.publicLayout) return doc;
     const { publicLayout: _omit, ...rest } = doc;
     return rest;
@@ -384,6 +467,7 @@ export function reconcilePublicLayout(doc: CanvasDocument): CanvasDocument {
     ...doc,
     publicLayout: {
       positions: nextPositions,
+      ...(hasZones ? { zones: nextZones } : {}),
       ...(hasViewportOrigin ? { viewportOrigin: doc.publicLayout?.viewportOrigin } : {}),
     },
   };
@@ -392,9 +476,11 @@ export function reconcilePublicLayout(doc: CanvasDocument): CanvasDocument {
 /**
  * Merge edits made while viewing/editing the locked (public) layout back
  * into the canonical document:
- * - Item/folder/zone/widget content & structural changes sync globally.
- * - Existing entities keep their canonical (unlocked) x/y/w/h, while locked
- *   coordinates/sizes write into `publicLayout.positions`.
+ * - Item/folder/widget content & structural changes sync globally.
+ * - Existing folders keep canonical x/y/w/h AND canonical displayMode, while
+ *   locked coords/sizes/displayMode write into `publicLayout.positions`.
+ * - Locked zones are stored solely in `publicLayout.zones`, leaving
+ *   `canonicalDoc.zones` completely untouched.
  * - Newly created or desktop-extracted top-level entities take their locked
  *   placement on the public side and avoid overlaps (and private zones) on the
  *   canonical side.
@@ -404,14 +490,12 @@ export function mergeLockedLayoutEdit(
   nextLockedDoc: CanvasDocument
 ): CanvasDocument {
   const prevParts = filterPublicDocParts(canonicalDoc);
-  const prevPublicZoneIds = new Set(prevParts.zones.map((z) => z.id));
   const prevPublicFolderIds = new Set(prevParts.folders.map((f) => f.id));
   const prevPublicItemIds = new Set(prevParts.items.map((i) => i.id));
   const prevPublicWidgetIds = new Set(prevParts.widgets.map((w) => w.id));
 
   const canonZones = canonicalDoc.zones ?? [];
-  const canonPrivateZones = canonZones.filter((z) => !prevPublicZoneIds.has(z.id));
-  const canonZoneMap = new Map(canonZones.map((z) => [z.id, z]));
+  const canonPrivateZones = canonZones.filter((z) => z.isPrivate);
   const canonFolderMap = new Map(canonicalDoc.folders.map((f) => [f.id, f]));
   const canonItemMap = new Map(canonicalDoc.items.map((i) => [i.id, i]));
   const canonWidgetMap = new Map((canonicalDoc.widgets ?? []).map((w) => [w.id, w]));
@@ -465,22 +549,32 @@ export function mergeLockedLayoutEdit(
     return desired;
   };
 
-  // 1. Zones
-  const syncedPublicZones: ZoneContainer[] = (nextLockedDoc.zones ?? []).map((nz) => {
-    nextPublicPositions[nz.id] = { x: nz.x, y: nz.y, w: nz.w, h: nz.h };
-    const orig = canonZoneMap.get(nz.id);
-    if (orig) {
-      return { ...nz, x: orig.x, y: orig.y, w: orig.w, h: orig.h };
-    }
-    return { ...nz };
-  });
+  // 1. Zones: canonical zones are preserved verbatim; locked zones live solely in publicLayout.zones
+  const syncedCanonicalZones = canonZones.map((z) => ({ ...z }));
+  const nextPublicZones: ZoneContainer[] = (nextLockedDoc.zones ?? []).map((nz) => ({
+    ...nz,
+    isPrivate: false,
+  }));
 
   // 2. Folders
   const syncedPublicFolders: FolderContainer[] = nextLockedDoc.folders.map((nf) => {
-    nextPublicPositions[nf.id] = { x: nf.x, y: nf.y, w: nf.w, h: nf.h };
+    nextPublicPositions[nf.id] = {
+      x: nf.x,
+      y: nf.y,
+      w: nf.w,
+      h: nf.h,
+      displayMode: nf.displayMode,
+    };
     const orig = canonFolderMap.get(nf.id);
     if (orig) {
-      return { ...nf, x: orig.x, y: orig.y, w: orig.w, h: orig.h };
+      return {
+        ...nf,
+        displayMode: orig.displayMode,
+        x: orig.x,
+        y: orig.y,
+        w: orig.w,
+        h: orig.h,
+      };
     }
     const slot = allocateCanonicalSlot({ x: nf.x, y: nf.y, w: nf.w, h: nf.h });
     return { ...nf, x: slot.x, y: slot.y, w: slot.w, h: slot.h };
@@ -542,10 +636,11 @@ export function mergeLockedLayoutEdit(
     grid: { ...canonicalDoc.grid },
     folders: [...privateFolders, ...syncedPublicFolders],
     items: [...privateItems, ...syncedPublicItems],
-    zones: [...canonPrivateZones, ...syncedPublicZones],
+    zones: syncedCanonicalZones,
     widgets: [...privateWidgets, ...syncedPublicWidgets],
     publicLayout: {
       positions: nextPublicPositions,
+      zones: nextPublicZones,
       ...(viewportOrigin !== undefined ? { viewportOrigin } : {}),
     },
   };
@@ -554,15 +649,17 @@ export function mergeLockedLayoutEdit(
 }
 
 /**
- * Copy all current canonical (unlocked) public entity positions & sizes into
- * `publicLayout.positions`, preserving any existing `publicLayout.viewportOrigin`.
+ * Copy all current canonical (unlocked) public entity positions, sizes,
+ * folder displayModes, and public zones into `publicLayout`, preserving any
+ * existing `publicLayout.viewportOrigin`.
  */
 export function buildSyncedPublicLayoutFromCanonical(doc: CanvasDocument): PublicLayoutConfig {
   const parts = filterPublicDocParts(doc);
   const positions: Record<string, LayoutOverride> = {};
 
-  for (const z of parts.zones) positions[z.id] = { x: z.x, y: z.y, w: z.w, h: z.h };
-  for (const f of parts.folders) positions[f.id] = { x: f.x, y: f.y, w: f.w, h: f.h };
+  for (const f of parts.folders) {
+    positions[f.id] = { x: f.x, y: f.y, w: f.w, h: f.h, displayMode: f.displayMode };
+  }
   for (const it of parts.items) {
     if (it.parentId === null) {
       positions[it.id] = { x: it.x, y: it.y, w: it.w, h: it.h };
@@ -570,9 +667,11 @@ export function buildSyncedPublicLayoutFromCanonical(doc: CanvasDocument): Publi
   }
   for (const w of parts.widgets) positions[w.id] = { x: w.x, y: w.y, w: w.w, h: w.h };
 
+  const zones = parts.zones.map((z) => ({ ...z, isPrivate: false }));
   const viewportOrigin = doc.publicLayout?.viewportOrigin;
   return {
     positions,
+    zones,
     ...(viewportOrigin !== undefined ? { viewportOrigin } : {}),
   };
 }

@@ -58,6 +58,9 @@ function cloneDocument(doc: CanvasDocument): CanvasDocument {
             positions: Object.fromEntries(
               Object.entries(doc.publicLayout.positions).map(([k, v]) => [k, { ...v }])
             ),
+            ...(doc.publicLayout.zones !== undefined
+              ? { zones: doc.publicLayout.zones.map((z) => ({ ...z })) }
+              : {}),
             ...(doc.publicLayout.viewportOrigin !== undefined
               ? {
                   viewportOrigin: doc.publicLayout.viewportOrigin
