@@ -14,6 +14,12 @@ import {
   validateEntities,
   validateNoOverlaps,
 } from '../shared/gridEngine.js';
+import type { CanvasDocument } from '../shared/types.js';
+import {
+  mergeLockedLayoutEdit,
+  projectPublicCanvas,
+  reconcilePublicLayout,
+} from '../shared/dualLayout.js';
 
 function makeEntity(id: string, x: number, y: number, w = 1, h = 1): GridEntity {
   return { id, x, y, w, h };
@@ -361,4 +367,190 @@ test('v4 zones: isValidZoneSize accepts 0.25-step sizes 1..40 (3x1, 3.5, 8.5), r
     ],
   });
   assert.equal(invalidNonQuarter.valid, false);
+});
+
+test('dualLayout: projectPublicCanvas, reconcilePublicLayout, and mergeLockedLayoutEdit preserve sync and separate layouts', () => {
+  const now = new Date().toISOString();
+  const canonical: CanvasDocument = {
+    version: 2,
+    updatedAt: now,
+    grid: { cellSize: 108, gap: 14 },
+    folders: [
+      {
+        id: 'f-pub',
+        title: '公开目录',
+        x: 0,
+        y: 0,
+        w: 2,
+        h: 2,
+        displayMode: 'grid',
+        isPrivate: false,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'f-priv',
+        title: '私密目录',
+        x: 4,
+        y: 0,
+        w: 2,
+        h: 2,
+        displayMode: 'grid',
+        isPrivate: true,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+    items: [
+      {
+        id: 'i-pub',
+        title: 'Pub Item',
+        url: 'https://pub.example',
+        parentId: null,
+        x: 2,
+        y: 0,
+        w: 1,
+        h: 1,
+        order: 0,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'i-new-unrecorded',
+        title: 'Unrecorded Desktop Item',
+        url: 'https://new.example',
+        parentId: null,
+        x: 5,
+        y: 5,
+        w: 1,
+        h: 1,
+        order: 0,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'i-priv-child',
+        title: 'Private Child',
+        url: 'https://secret.example',
+        parentId: 'f-priv',
+        x: 0,
+        y: 0,
+        w: 1,
+        h: 1,
+        order: 0,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+    zones: [
+      {
+        id: 'z-priv',
+        title: '私密区',
+        x: 10,
+        y: 10,
+        w: 4,
+        h: 4,
+        isPrivate: true,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+    widgets: [
+      {
+        id: 'w-priv-note',
+        kind: 'note',
+        title: '私密便签',
+        content: 'secret',
+        isPrivate: true,
+        x: 3,
+        y: 2,
+        w: 2,
+        h: 2,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+    publicLayout: {
+      positions: {
+        'f-pub': { x: 5, y: 5, w: 3, h: 2 }, // intentionally covers (5,5) to test collision fallback of i-new-unrecorded
+        'i-pub': { x: 0, y: 0, w: 2, h: 1 },
+        'f-priv': { x: 99, y: 99, w: 2, h: 2 }, // stale/private key should be ignored & pruned
+      },
+      viewportOrigin: { x: 120, y: -40 },
+    },
+  };
+
+  // 1. projectPublicCanvas applies independent (x, y, w, h) & strips raw publicLayout + avoids overlaps
+  const projected = projectPublicCanvas(canonical);
+  assert.equal(projected.hasPrivateHidden, true);
+  assert.deepEqual(projected.publicViewportOrigin, { x: 120, y: -40 });
+  assert.equal('publicLayout' in projected.doc, false);
+  assert.equal(validateCanvasDocument(projected.doc).valid, true);
+
+  const projFolder = projected.doc.folders.find((f) => f.id === 'f-pub')!;
+  assert.deepEqual({ x: projFolder.x, y: projFolder.y, w: projFolder.w, h: projFolder.h }, { x: 5, y: 5, w: 3, h: 2 });
+  const projItem = projected.doc.items.find((i) => i.id === 'i-pub')!;
+  assert.deepEqual({ x: projItem.x, y: projItem.y, w: projItem.w, h: projItem.h }, { x: 0, y: 0, w: 2, h: 1 });
+
+  // i-new-unrecorded wanted (5,5) which f-pub occupies in locked view -> relocated without overlap
+  const relocatedNew = projected.doc.items.find((i) => i.id === 'i-new-unrecorded')!;
+  assert.ok(relocatedNew.x !== 5 || relocatedNew.y !== 5);
+
+  // 2. reconcilePublicLayout prunes private key and stores relocated slot cleanly
+  const reconciled = reconcilePublicLayout(canonical);
+  assert.equal(reconciled.publicLayout?.positions['f-priv'], undefined);
+  assert.ok(reconciled.publicLayout?.positions['i-new-unrecorded']);
+
+  // 3. mergeLockedLayoutEdit syncs rename/addition/deletion while keeping canonical coords & private items untouched
+  const lockedEdited: CanvasDocument = {
+    ...projected.doc,
+    folders: projected.doc.folders.map((f) =>
+      f.id === 'f-pub' ? { ...f, title: '同步改名目录', x: 8, y: 8, w: 2, h: 3 } : f
+    ),
+    items: [
+      ...projected.doc.items
+        .filter((i) => i.id !== 'i-new-unrecorded')
+        .map((i) => (i.id === 'i-pub' ? { ...i, title: 'Synced Title', url: 'https://synced.example', x: 1, y: 1, w: 2, h: 2 } : i)),
+      {
+        id: 'i-added-in-locked',
+        title: 'Added In Locked',
+        url: 'https://added.example',
+        parentId: null,
+        x: 4, // intentionally collides with f-priv (4,0,2,2) on canonical canvas!
+        y: 0,
+        w: 1,
+        h: 1,
+        order: 0,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+  };
+
+  const merged = mergeLockedLayoutEdit(reconciled, lockedEdited);
+  assert.equal(validateCanvasDocument(merged).valid, true);
+  assert.equal(validateCanvasDocument(projectPublicCanvas(merged).doc).valid, true);
+
+  // Canonical coords for f-pub & i-pub remain unchanged (0,0,2,2) and (2,0,1,1), while title/url synced
+  const mergedCanonFolder = merged.folders.find((f) => f.id === 'f-pub')!;
+  assert.equal(mergedCanonFolder.title, '同步改名目录');
+  assert.deepEqual({ x: mergedCanonFolder.x, y: mergedCanonFolder.y, w: mergedCanonFolder.w, h: mergedCanonFolder.h }, { x: 0, y: 0, w: 2, h: 2 });
+
+  const mergedCanonItem = merged.items.find((i) => i.id === 'i-pub')!;
+  assert.equal(mergedCanonItem.title, 'Synced Title');
+  assert.equal(mergedCanonItem.url, 'https://synced.example');
+  assert.deepEqual({ x: mergedCanonItem.x, y: mergedCanonItem.y, w: mergedCanonItem.w, h: mergedCanonItem.h }, { x: 2, y: 0, w: 1, h: 1 });
+
+  // Private entities remain completely untouched, and i-new-unrecorded deletion synced
+  assert.ok(merged.folders.some((f) => f.id === 'f-priv'));
+  assert.ok(merged.items.some((i) => i.id === 'i-priv-child'));
+  assert.ok((merged.widgets ?? []).some((w) => w.id === 'w-priv-note'));
+  assert.equal(merged.items.some((i) => i.id === 'i-new-unrecorded'), false);
+
+  // Added item stays at (4,0) in publicLayout, while canonical side avoids f-priv at (4,0)
+  assert.deepEqual(merged.publicLayout?.positions['i-added-in-locked'], { x: 4, y: 0, w: 1, h: 1 });
+  const canonAdded = merged.items.find((i) => i.id === 'i-added-in-locked')!;
+  assert.ok(canonAdded.x !== 4 || canonAdded.y !== 0);
+  // Existing publicLayout.viewportOrigin preserved across merge
+  assert.deepEqual(merged.publicLayout?.viewportOrigin, { x: 120, y: -40 });
 });

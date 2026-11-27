@@ -5,6 +5,7 @@ import {
   AlignRight,
   Bold,
   Check,
+  Copy,
   Crosshair,
   FolderInput,
   FolderPlus,
@@ -30,6 +31,7 @@ import type {
   NoteWidget,
   ZoneContainer,
 } from '../../shared/types';
+import type { EditLayoutTarget } from '../App';
 import { SHORTCUT_REDO, SHORTCUT_UNDO } from '../utils/platform';
 
 export type EditInspectorTarget =
@@ -77,6 +79,9 @@ interface EditDockProps {
   showAnchorButton?: boolean;
   canUndo: boolean;
   canRedo: boolean;
+  layoutTarget: EditLayoutTarget;
+  onChangeLayoutTarget: (target: EditLayoutTarget) => void;
+  onSyncUnlockedToLocked: () => void;
   onCreateItem: () => void;
   onCreateFolder: () => void;
   onCreateZone: () => void;
@@ -119,6 +124,9 @@ export function EditDock({
   showAnchorButton = true,
   canUndo,
   canRedo,
+  layoutTarget,
+  onChangeLayoutTarget,
+  onSyncUnlockedToLocked,
   onCreateItem,
   onCreateFolder,
   onCreateZone,
@@ -629,6 +637,56 @@ export function EditDock({
           )}
         </div>
       )}
+
+      {/* Dual-Layout Target Switcher Pill */}
+      <div className="pointer-events-auto pill-surface flex flex-wrap items-center justify-center gap-1 px-2 py-1 text-[11px] max-w-full">
+        <button
+          type="button"
+          onClick={() => onChangeLayoutTarget('unlocked')}
+          className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 font-medium transition-colors cursor-pointer ${
+            layoutTarget === 'unlocked'
+              ? 'bg-[var(--ink-main)] text-[var(--bg-card)]'
+              : 'text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)]'
+          }`}
+          title="编辑解锁后自己看到的完整布局（含私密内容）"
+        >
+          <Unlock size={11} />
+          <span>解锁后布局</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onChangeLayoutTarget('locked')}
+          className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 font-medium transition-colors cursor-pointer ${
+            layoutTarget === 'locked'
+              ? 'bg-amber-500 text-white'
+              : 'text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)]'
+          }`}
+          title="编辑未解锁访客看到的公开独立布局"
+        >
+          <Lock size={11} />
+          <span>解锁前布局</span>
+        </button>
+
+        {layoutTarget === 'locked' && (
+          <>
+            {divider}
+            <button
+              type="button"
+              onClick={onSyncUnlockedToLocked}
+              className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 font-medium bg-[var(--bg-subtle)] hover:bg-[var(--accent-orange)] hover:text-white border border-[var(--border-hair)] text-[var(--ink-main)] transition-colors cursor-pointer"
+              title="将解锁后布局中公开元素的位置与尺寸复制到当前解锁前布局，可随时撤销"
+            >
+              <Copy size={11} />
+              <span>继承解锁后排版</span>
+            </button>
+          </>
+        )}
+
+        <span className="hidden sm:inline text-[10.5px] text-[var(--ink-muted)] pl-1 pr-1">
+          仅位置/尺寸与锚点独立，书签内容全局同步
+        </span>
+      </div>
 
       {/* Main Flat Creation + History Dock */}
       <div className="pointer-events-auto pill-surface flex flex-wrap items-center justify-center gap-1 px-2.5 py-1.5 text-xs max-w-full">

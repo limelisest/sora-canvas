@@ -12,10 +12,17 @@ import type {
   FreeTextWidget,
   MobileDefaultView,
   NoteWidget,
+  PublicLayoutConfig,
   SiteSettings,
   ZoneContainer,
 } from '../shared/types';
 import { DEFAULT_SITE_SETTINGS } from '../shared/settings';
+import {
+  buildSyncedPublicLayoutFromCanonical,
+  mergeLockedLayoutEdit,
+  projectPublicCanvas,
+  reconcilePublicLayout,
+} from '../shared/dualLayout';
 import {
   applyEntityLayoutToDoc,
   clampGridSize,
@@ -83,6 +90,7 @@ const ContextMenu = lazy(() =>
 
 const THEME_STORAGE_KEY = 'neko-like-theme';
 export type ThemeMode = 'auto' | 'light' | 'dark';
+export type EditLayoutTarget = 'unlocked' | 'locked';
 
 function defaultThemeToMode(mode: DefaultThemeMode): ThemeMode {
   if (mode === 'dark') return 'dark';
@@ -143,8 +151,26 @@ export default function App() {
     Boolean(INITIAL_BOOT?.hasPrivateHidden)
   );
   const [editMode, setEditMode] = useState(false);
+  const [layoutTarget, setLayoutTarget] = useState<EditLayoutTarget>('unlocked');
   const [marqueeMode, setMarqueeMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  const editingLockedLayout = unlocked && editMode && layoutTarget === 'locked';
+  const editingLockedRef = useRef(false);
+  editingLockedRef.current = editingLockedLayout;
+
+  const displayedDoc = useMemo(
+    () => (editingLockedLayout ? projectPublicCanvas(doc).doc : doc),
+    [editingLockedLayout, doc]
+  );
+
+  const activeViewportOrigin = editingLockedLayout
+    ? (doc.publicLayout?.viewportOrigin ?? null)
+    : settings.viewportOrigin;
+  const activeSettingsForViewport = useMemo(
+    () => ({ ...settings, viewportOrigin: activeViewportOrigin }),
+    [settings, activeViewportOrigin]
+  );
 
   const [view, setView] = useState(() =>
     INITIAL_BOOT
@@ -190,6 +216,7 @@ export default function App() {
       items: BookmarkItem[];
       zones: ZoneContainer[];
       widgets: CanvasWidget[];
+      publicLayout?: PublicLayoutConfig;
     }>
   >([]);
   const [redoStack, setRedoStack] = useState<
@@ -198,6 +225,7 @@ export default function App() {
       items: BookmarkItem[];
       zones: ZoneContainer[];
       widgets: CanvasWidget[];
+      publicLayout?: PublicLayoutConfig;
     }>
   >([]);
 
@@ -461,7 +489,8 @@ export default function App() {
       nextItems: BookmarkItem[],
       recordUndo = true,
       nextZones?: ZoneContainer[],
-      nextWidgets?: CanvasWidget[]
+      nextWidgets?: CanvasWidget[],
+      options?: { nextPublicLayout?: PublicLayoutConfig; replaceCanonical?: boolean }
     ) => {
       const prevDoc = docRef.current;
       const curZones = prevDoc.zones ?? [];
@@ -474,18 +503,47 @@ export default function App() {
             items: prevDoc.items,
             zones: curZones,
             widgets: curWidgets,
+            publicLayout: prevDoc.publicLayout,
           },
         ]);
         setRedoStack([]);
       }
-      const nextDoc: CanvasDocument = {
-        ...prevDoc,
-        updatedAt: new Date().toISOString(),
-        folders: nextFolders,
-        items: nextItems,
-        zones: nextZones ?? curZones,
-        widgets: nextWidgets ?? curWidgets,
-      };
+
+      const now = new Date().toISOString();
+      let nextDoc: CanvasDocument;
+      if (options?.replaceCanonical) {
+        const { publicLayout: _omit, ...restPrev } = prevDoc;
+        nextDoc = reconcilePublicLayout({
+          ...restPrev,
+          updatedAt: now,
+          folders: nextFolders,
+          items: nextItems,
+          zones: nextZones ?? curZones,
+          widgets: nextWidgets ?? curWidgets,
+          ...(options.nextPublicLayout ? { publicLayout: options.nextPublicLayout } : {}),
+        });
+      } else if (editingLockedRef.current) {
+        const curDisplayed = projectPublicCanvas(prevDoc).doc;
+        const nextLockedDoc: CanvasDocument = {
+          ...prevDoc,
+          updatedAt: now,
+          folders: nextFolders,
+          items: nextItems,
+          zones: nextZones ?? curDisplayed.zones ?? [],
+          widgets: nextWidgets ?? curDisplayed.widgets ?? [],
+        };
+        nextDoc = mergeLockedLayoutEdit(prevDoc, nextLockedDoc);
+      } else {
+        nextDoc = reconcilePublicLayout({
+          ...prevDoc,
+          updatedAt: now,
+          folders: nextFolders,
+          items: nextItems,
+          zones: nextZones ?? curZones,
+          widgets: nextWidgets ?? curWidgets,
+        });
+      }
+
       docRef.current = nextDoc;
       setDoc(nextDoc);
 
@@ -511,23 +569,29 @@ export default function App() {
 
   const handleCommitLayout = useCallback(
     (nextEntities: CanvasGridEntity[]) => {
-      const updated = applyEntityLayoutToDoc(doc, nextEntities);
+      const updated = applyEntityLayoutToDoc(displayedDoc, nextEntities);
       void commitDocState(
         updated.folders,
         updated.items,
         true,
-        updated.zones ?? doc.zones ?? [],
-        updated.widgets ?? doc.widgets ?? []
+        updated.zones ?? displayedDoc.zones ?? [],
+        updated.widgets ?? displayedDoc.widgets ?? []
       );
     },
-    [doc, commitDocState]
+    [displayedDoc, commitDocState]
   );
 
   const handleCommitZones = useCallback(
     (nextZones: ZoneContainer[]) => {
-      void commitDocState(doc.folders, doc.items, true, nextZones, doc.widgets ?? []);
+      void commitDocState(
+        displayedDoc.folders,
+        displayedDoc.items,
+        true,
+        nextZones,
+        displayedDoc.widgets ?? []
+      );
     },
-    [doc.folders, doc.items, doc.widgets, commitDocState]
+    [displayedDoc.folders, displayedDoc.items, displayedDoc.widgets, commitDocState]
   );
 
   const handleCommitZoneGroup = useCallback(
@@ -536,38 +600,58 @@ export default function App() {
       nextEntities: CanvasGridEntity[],
       nextTextWidgets: FreeTextWidget[]
     ) => {
-      const updated = applyEntityLayoutToDoc(doc, nextEntities);
-      const nextZones = (doc.zones ?? []).map((z) => (z.id === nextZone.id ? nextZone : z));
+      const updated = applyEntityLayoutToDoc(displayedDoc, nextEntities);
+      const nextZones = (displayedDoc.zones ?? []).map((z) =>
+        z.id === nextZone.id ? nextZone : z
+      );
       const textMap = new Map(nextTextWidgets.map((t) => [t.id, t]));
-      const nextWidgets = (updated.widgets ?? doc.widgets ?? []).map((w) =>
+      const nextWidgets = (updated.widgets ?? displayedDoc.widgets ?? []).map((w) =>
         w.kind === 'text' ? (textMap.get(w.id) ?? w) : w
       );
       void commitDocState(updated.folders, updated.items, true, nextZones, nextWidgets);
     },
-    [doc, commitDocState]
+    [displayedDoc, commitDocState]
   );
 
   const handleCommitTextWidgets = useCallback(
     (nextTextWidgets: FreeTextWidget[]) => {
       const textMap = new Map(nextTextWidgets.map((t) => [t.id, t]));
-      const nextWidgets = (doc.widgets ?? []).map((w) =>
+      const nextWidgets = (displayedDoc.widgets ?? []).map((w) =>
         w.kind === 'text' ? (textMap.get(w.id) ?? w) : w
       );
-      void commitDocState(doc.folders, doc.items, true, doc.zones ?? [], nextWidgets);
+      void commitDocState(
+        displayedDoc.folders,
+        displayedDoc.items,
+        true,
+        displayedDoc.zones ?? [],
+        nextWidgets
+      );
     },
-    [doc.folders, doc.items, doc.zones, doc.widgets, commitDocState]
+    [
+      displayedDoc.folders,
+      displayedDoc.items,
+      displayedDoc.zones,
+      displayedDoc.widgets,
+      commitDocState,
+    ]
   );
 
   const handleCommitEntitiesAndTexts = useCallback(
     (nextEntities: CanvasGridEntity[], nextTextWidgets: FreeTextWidget[]) => {
-      const updated = applyEntityLayoutToDoc(doc, nextEntities);
+      const updated = applyEntityLayoutToDoc(displayedDoc, nextEntities);
       const textMap = new Map(nextTextWidgets.map((t) => [t.id, t]));
-      const nextWidgets = (updated.widgets ?? doc.widgets ?? []).map((w) =>
+      const nextWidgets = (updated.widgets ?? displayedDoc.widgets ?? []).map((w) =>
         w.kind === 'text' ? (textMap.get(w.id) ?? w) : w
       );
-      void commitDocState(updated.folders, updated.items, true, doc.zones ?? [], nextWidgets);
+      void commitDocState(
+        updated.folders,
+        updated.items,
+        true,
+        displayedDoc.zones ?? [],
+        nextWidgets
+      );
     },
-    [doc, commitDocState]
+    [displayedDoc, commitDocState]
   );
 
   const handleUndo = useCallback(() => {
@@ -581,10 +665,14 @@ export default function App() {
         items: doc.items,
         zones: doc.zones ?? [],
         widgets: doc.widgets ?? [],
+        publicLayout: doc.publicLayout,
       },
     ]);
-    void commitDocState(prev.folders, prev.items, false, prev.zones, prev.widgets);
-  }, [undoStack, doc.folders, doc.items, doc.zones, doc.widgets, commitDocState]);
+    void commitDocState(prev.folders, prev.items, false, prev.zones, prev.widgets, {
+      nextPublicLayout: prev.publicLayout,
+      replaceCanonical: true,
+    });
+  }, [undoStack, doc.folders, doc.items, doc.zones, doc.widgets, doc.publicLayout, commitDocState]);
 
   const handleRedo = useCallback(() => {
     if (redoStack.length === 0) return;
@@ -597,12 +685,16 @@ export default function App() {
         items: doc.items,
         zones: doc.zones ?? [],
         widgets: doc.widgets ?? [],
+        publicLayout: doc.publicLayout,
       },
     ]);
-    void commitDocState(next.folders, next.items, false, next.zones, next.widgets);
-  }, [redoStack, doc.folders, doc.items, doc.zones, doc.widgets, commitDocState]);
+    void commitDocState(next.folders, next.items, false, next.zones, next.widgets, {
+      nextPublicLayout: next.publicLayout,
+      replaceCanonical: true,
+    });
+  }, [redoStack, doc.folders, doc.items, doc.zones, doc.widgets, doc.publicLayout, commitDocState]);
 
-  const topLevelEntities = useMemo(() => getTopLevelEntities(doc), [doc]);
+  const topLevelEntities = useMemo(() => getTopLevelEntities(displayedDoc), [displayedDoc]);
 
   const handleDeleteEntities = useCallback(
     (ids: string[]) => {
@@ -611,9 +703,9 @@ export default function App() {
 
       // If deleting a single non-empty folder, open DissolveFolderModal
       if (ids.length === 1) {
-        const folder = doc.folders.find((f) => f.id === ids[0]);
+        const folder = displayedDoc.folders.find((f) => f.id === ids[0]);
         if (folder) {
-          const childCount = doc.items.filter((i) => i.parentId === folder.id).length;
+          const childCount = displayedDoc.items.filter((i) => i.parentId === folder.id).length;
           if (childCount > 0) {
             setDissolveTarget(folder);
             return;
@@ -623,15 +715,15 @@ export default function App() {
 
       // If multiple items/folders deleted via Dock, dissolve any non-empty folders safely to desktop or delete items
       const deletedFolderIds = new Set(
-        doc.folders.filter((f) => idSet.has(f.id)).map((f) => f.id)
+        displayedDoc.folders.filter((f) => idSet.has(f.id)).map((f) => f.id)
       );
-      const nextFolders = doc.folders.filter((f) => !idSet.has(f.id));
-      const nextZones = (doc.zones ?? []).filter((z) => !idSet.has(z.id));
-      const nextWidgets = (doc.widgets ?? []).filter((w) => !idSet.has(w.id));
+      const nextFolders = displayedDoc.folders.filter((f) => !idSet.has(f.id));
+      const nextZones = (displayedDoc.zones ?? []).filter((z) => !idSet.has(z.id));
+      const nextWidgets = (displayedDoc.widgets ?? []).filter((w) => !idSet.has(w.id));
       const now = new Date().toISOString();
 
       // Unpack orphaned items from multi-deleted folders if their item wasn't explicitly selected for deletion
-      const remainingItems = doc.items.filter((i) => !idSet.has(i.id));
+      const remainingItems = displayedDoc.items.filter((i) => !idSet.has(i.id));
       const occupied = getTopLevelEntities({
         folders: nextFolders,
         items: remainingItems,
@@ -640,7 +732,7 @@ export default function App() {
 
       const nextItems = remainingItems.map((it) => {
         if (it.parentId && deletedFolderIds.has(it.parentId)) {
-          const srcFolder = doc.folders.find((f) => f.id === it.parentId);
+          const srcFolder = displayedDoc.folders.find((f) => f.id === it.parentId);
           const slot = findNearestFreeSlot(occupied, 1, 1, srcFolder?.x ?? 0, srcFolder?.y ?? 0);
           occupied.push({ x: slot.x, y: slot.y, w: 1, h: 1 });
           return {
@@ -660,15 +752,21 @@ export default function App() {
       void commitDocState(nextFolders, nextItems, true, nextZones, nextWidgets);
       setSelectedIds([]);
     },
-    [doc.folders, doc.items, doc.zones, doc.widgets, commitDocState]
+    [
+      displayedDoc.folders,
+      displayedDoc.items,
+      displayedDoc.zones,
+      displayedDoc.widgets,
+      commitDocState,
+    ]
   );
 
   const handleDeleteDraggingEntities = useCallback(
     (ids: string[]) => {
       if (ids.length === 0) return;
       if (ids.length === 1) {
-        const folder = doc.folders.find((f) => f.id === ids[0]);
-        if (folder && doc.items.some((i) => i.parentId === folder.id)) {
+        const folder = displayedDoc.folders.find((f) => f.id === ids[0]);
+        if (folder && displayedDoc.items.some((i) => i.parentId === folder.id)) {
           setDissolveTarget(folder);
           return;
         }
@@ -676,19 +774,19 @@ export default function App() {
       handleDeleteEntities(ids);
       showToast('已删除（可按撤销恢复）');
     },
-    [doc.folders, doc.items, handleDeleteEntities, showToast]
+    [displayedDoc.folders, displayedDoc.items, handleDeleteEntities, showToast]
   );
 
   const handleDeleteDraggingChildItem = useCallback(
     (itemId: string) => {
       void commitDocState(
-        doc.folders,
-        doc.items.filter((i) => i.id !== itemId),
+        displayedDoc.folders,
+        displayedDoc.items.filter((i) => i.id !== itemId),
         true
       );
       showToast('已删除（可按撤销恢复）');
     },
-    [doc.folders, doc.items, commitDocState, showToast]
+    [displayedDoc.folders, displayedDoc.items, commitDocState, showToast]
   );
 
   // Global keyboard shortcuts
@@ -758,10 +856,10 @@ export default function App() {
         const now = new Date().toISOString();
 
         if (selectedIds.length === 1) {
-          const zone = (doc.zones ?? []).find((z) => z.id === selectedIds[0]);
+          const zone = (displayedDoc.zones ?? []).find((z) => z.id === selectedIds[0]);
           if (zone) {
             if (e.altKey) {
-              const nextZones = (doc.zones ?? []).map((z) =>
+              const nextZones = (displayedDoc.zones ?? []).map((z) =>
                 z.id === zone.id
                   ? {
                       ...z,
@@ -777,7 +875,7 @@ export default function App() {
             const movingForegroundIds = topLevelEntities
               .filter((ent) => isEntityInsideZone(ent, zone))
               .map((ent) => ent.id);
-            const movingTextIds = (doc.widgets ?? [])
+            const movingTextIds = (displayedDoc.widgets ?? [])
               .filter((w): w is FreeTextWidget => w.kind === 'text' && isEntityInsideZone(w, zone))
               .map((tw) => tw.id);
             const res = solveMoveZoneGroup(topLevelEntities, movingForegroundIds, ndx, ndy);
@@ -792,7 +890,7 @@ export default function App() {
               updatedAt: now,
             };
             const movingTextSet = new Set(movingTextIds);
-            const nextTextWidgets = (doc.widgets ?? [])
+            const nextTextWidgets = (displayedDoc.widgets ?? [])
               .filter((w): w is FreeTextWidget => w.kind === 'text')
               .map((tw) =>
                 movingTextSet.has(tw.id)
@@ -810,7 +908,7 @@ export default function App() {
         }
 
         const entityIdSet = new Set(topLevelEntities.map((ent) => ent.id));
-        const textList = (doc.widgets ?? []).filter(
+        const textList = (displayedDoc.widgets ?? []).filter(
           (w): w is FreeTextWidget => w.kind === 'text'
         );
         const textIdSet = new Set(textList.map((tw) => tw.id));
@@ -878,8 +976,8 @@ export default function App() {
     unlockModal.open,
     contextMenu,
     inlineEditingId,
-    doc.zones,
-    doc.widgets,
+    displayedDoc.zones,
+    displayedDoc.widgets,
     topLevelEntities,
     handleUndo,
     handleRedo,
@@ -920,46 +1018,18 @@ export default function App() {
         setUnlocked(false);
         setSettingsOpen(false);
         setEditMode(false);
+        setLayoutTarget('unlocked');
         setMarqueeMode(false);
         setSelectedIds([]);
         setActiveFolderId(null);
         setDoc((cur) => {
-          const privZones = (cur.zones ?? []).filter((z) => z.isPrivate);
-          const privFolderIds = new Set(
-            cur.folders
-              .filter((f) => f.isPrivate || privZones.some((pz) => isEntityInsideZone(f, pz)))
-              .map((f) => f.id)
-          );
-          const nextFolders = cur.folders.filter((f) => !privFolderIds.has(f.id));
-          const nextItems = cur.items.filter(
-            (it) =>
-              it.parentId !== null
-                ? !privFolderIds.has(it.parentId)
-                : !privZones.some((pz) => isEntityInsideZone(it, pz))
-          );
-          const nextZones = (cur.zones ?? []).filter((z) => !z.isPrivate);
-          const nextWidgets = (cur.widgets ?? []).filter(
-            (w) =>
-              !(w.kind === 'note' && w.isPrivate) &&
-              !privZones.some((pz) => isEntityInsideZone(w, pz))
-          );
-          if (
-            privZones.length > 0 ||
-            privFolderIds.size > 0 ||
-            nextItems.length < cur.items.length ||
-            nextWidgets.length < (cur.widgets ?? []).length
-          ) {
+          const { doc: pubDoc, hasPrivateHidden: priv } = projectPublicCanvas(cur);
+          if (priv) {
             setHasPrivateHidden(true);
           }
-          return {
-            ...cur,
-            folders: nextFolders,
-            items: nextItems,
-            zones: nextZones,
-            widgets: nextWidgets,
-          };
+          return pubDoc;
         });
-        await refreshCanvas(resolveActiveViewportMode(settings) === 'auto');
+        await refreshCanvas(true);
         showToast('已重新上锁，私密文件夹已隐藏');
       } catch (err) {
         showToast(err instanceof Error ? err.message : '上锁失败，请重试', 'error');
@@ -1005,7 +1075,10 @@ export default function App() {
     [doc]
   );
 
-  const resolvedOrigin = useMemo(() => resolveViewportOrigin(doc, settings), [doc, settings]);
+  const resolvedOrigin = useMemo(
+    () => resolveViewportOrigin(displayedDoc, activeSettingsForViewport),
+    [displayedDoc, activeSettingsForViewport]
+  );
 
   const handleZoomStep = useCallback((dir: 'in' | 'out') => {
     setView((prev) => {
@@ -1027,31 +1100,96 @@ export default function App() {
   }, []);
 
   const handleResetView = useCallback(() => {
-    setView(computeInitialView(doc, settings));
-  }, [doc, settings]);
+    setView(computeInitialView(displayedDoc, activeSettingsForViewport));
+  }, [displayedDoc, activeSettingsForViewport]);
 
   const handleSetViewportOrigin = useCallback(async () => {
     const wx = Math.round((window.innerWidth / 2 - view.panX) / view.scale);
     const wy = Math.round((window.innerHeight / 2 - view.panY) / view.scale);
+    if (editingLockedRef.current) {
+      const prevDoc = docRef.current;
+      const curPl = prevDoc.publicLayout ?? { positions: {} };
+      commitDocState(prevDoc.folders, prevDoc.items, true, prevDoc.zones, prevDoc.widgets, {
+        nextPublicLayout: { ...curPl, viewportOrigin: { x: wx, y: wy } },
+        replaceCanonical: true,
+      });
+      showToast('已将当前屏幕中心设为「解锁前」视野锚点');
+      return;
+    }
     try {
       await handleUpdateSettings({ viewportOrigin: { x: wx, y: wy } });
-      showToast('已将当前屏幕中心设为视野锚点');
+      showToast('已将当前屏幕中心设为「解锁后」视野锚点');
     } catch (err) {
       showToast(err instanceof Error ? err.message : '设置视野锚点失败', 'error');
     }
-  }, [view.panX, view.panY, view.scale, handleUpdateSettings, showToast]);
+  }, [view.panX, view.panY, view.scale, commitDocState, handleUpdateSettings, showToast]);
 
   const handleUpdateViewportOrigin = useCallback(
     async (origin: { x: number; y: number }) => {
+      if (editingLockedRef.current) {
+        const prevDoc = docRef.current;
+        const curPl = prevDoc.publicLayout ?? { positions: {} };
+        commitDocState(prevDoc.folders, prevDoc.items, true, prevDoc.zones, prevDoc.widgets, {
+          nextPublicLayout: { ...curPl, viewportOrigin: origin },
+          replaceCanonical: true,
+        });
+        showToast(`已更新「解锁前」视野锚点 (${origin.x}, ${origin.y})`);
+        return;
+      }
       try {
         await handleUpdateSettings({ viewportOrigin: origin });
-        showToast(`已更新视野锚点 (${origin.x}, ${origin.y})`);
+        showToast(`已更新「解锁后」视野锚点 (${origin.x}, ${origin.y})`);
       } catch (err) {
         showToast(err instanceof Error ? err.message : '保存视野锚点失败', 'error');
       }
     },
-    [handleUpdateSettings, showToast]
+    [commitDocState, handleUpdateSettings, showToast]
   );
+
+  const flyToViewState = useCallback((nextView: { scale: number; panX: number; panY: number }) => {
+    if (flyTimerRef.current !== null) {
+      window.clearTimeout(flyTimerRef.current);
+    }
+    setFlyTransition(true);
+    setView(nextView);
+    flyTimerRef.current = window.setTimeout(() => {
+      flyTimerRef.current = null;
+      setFlyTransition(false);
+    }, 360);
+  }, []);
+
+  const handleSwitchLayoutTarget = useCallback(
+    (nextTarget: EditLayoutTarget) => {
+      if (nextTarget === layoutTarget) return;
+      setSelectedIds([]);
+      setInlineEditingId(null);
+      setLayoutTarget(nextTarget);
+      const curDoc = docRef.current;
+      const targetDoc = nextTarget === 'locked' ? projectPublicCanvas(curDoc).doc : curDoc;
+      const targetOrigin =
+        nextTarget === 'locked'
+          ? (curDoc.publicLayout?.viewportOrigin ?? null)
+          : settings.viewportOrigin;
+      flyToViewState(
+        computeInitialView(targetDoc, {
+          ...settings,
+          viewportOrigin: targetOrigin,
+        })
+      );
+    },
+    [layoutTarget, settings, flyToViewState]
+  );
+
+  const handleSyncUnlockedToLocked = useCallback(() => {
+    const curDoc = docRef.current;
+    const syncedPl = buildSyncedPublicLayoutFromCanonical(curDoc);
+    commitDocState(curDoc.folders, curDoc.items, true, curDoc.zones, curDoc.widgets, {
+      nextPublicLayout: syncedPl,
+      replaceCanonical: true,
+    });
+    setSelectedIds([]);
+    showToast('已继承解锁后公开元素排版（可按撤销恢复）');
+  }, [commitDocState, showToast]);
 
   async function handleToggleEditMode() {
     if (editMode) {
@@ -1077,10 +1215,15 @@ export default function App() {
         }
       }
 
+      const wasLockedTarget = layoutTarget === 'locked';
       setEditMode(false);
+      setLayoutTarget('unlocked');
       setMarqueeMode(false);
       setInlineEditingId(null);
       setSelectedIds([]);
+      if (wasLockedTarget) {
+        flyToViewState(computeInitialView(docRef.current, settings));
+      }
       if (sessionDirtyRef.current) {
         sessionDirtyRef.current = false;
         showToast('✓ 布局已保存', 'success');
@@ -1096,6 +1239,7 @@ export default function App() {
       return;
     }
     sessionDirtyRef.current = false;
+    setLayoutTarget('unlocked');
     setEditMode(true);
   }
 
@@ -1105,11 +1249,11 @@ export default function App() {
 
     if (editorDraft.mode === 'edit-folder') {
       const existing = editorDraft.folder;
-      let nextDoc = doc;
+      let nextDoc = displayedDoc;
       if (payload.w !== existing.w || payload.h !== existing.h) {
         const res = solveResize(topLevelEntities, existing.id, payload.w, payload.h);
         if (!res.ok) return res.message;
-        nextDoc = applyEntityLayoutToDoc(doc, res.entities, now);
+        nextDoc = applyEntityLayoutToDoc(displayedDoc, res.entities, now);
       }
       const nextFolders = nextDoc.folders.map((f) =>
         f.id === existing.id
@@ -1128,8 +1272,8 @@ export default function App() {
         nextFolders,
         nextDoc.items,
         true,
-        nextDoc.zones ?? doc.zones ?? [],
-        nextDoc.widgets ?? doc.widgets ?? []
+        nextDoc.zones ?? displayedDoc.zones ?? [],
+        nextDoc.widgets ?? displayedDoc.widgets ?? []
       );
       setEditorDraft(null);
       return null;
@@ -1138,21 +1282,21 @@ export default function App() {
     if (editorDraft.mode === 'edit-item') {
       const existing = editorDraft.item;
       const targetParentId = payload.parentId ?? null;
-      let nextDoc = doc;
+      let nextDoc = displayedDoc;
 
       if (targetParentId === null) {
         if (existing.parentId === null) {
           if (payload.w !== existing.w || payload.h !== existing.h) {
             const res = solveResize(topLevelEntities, existing.id, payload.w, payload.h);
             if (!res.ok) return res.message;
-            nextDoc = applyEntityLayoutToDoc(doc, res.entities, now);
+            nextDoc = applyEntityLayoutToDoc(displayedDoc, res.entities, now);
           }
         } else {
           // Moving from folder to desktop via editor
           const slot = findNearestFreeSlot(topLevelEntities, payload.w, payload.h, 0, 0);
           nextDoc = {
-            ...doc,
-            items: doc.items.map((it) =>
+            ...displayedDoc,
+            items: displayedDoc.items.map((it) =>
               it.id === existing.id
                 ? { ...it, parentId: null, x: slot.x, y: slot.y, w: payload.w, h: payload.h, order: 0 }
                 : it
@@ -1188,8 +1332,8 @@ export default function App() {
         nextDoc.folders,
         nextItems,
         true,
-        nextDoc.zones ?? doc.zones ?? [],
-        nextDoc.widgets ?? doc.widgets ?? []
+        nextDoc.zones ?? displayedDoc.zones ?? [],
+        nextDoc.widgets ?? displayedDoc.widgets ?? []
       );
       setEditorDraft(null);
       return null;
@@ -1213,7 +1357,7 @@ export default function App() {
         createdAt: now,
         updatedAt: now,
       };
-      void commitDocState([...doc.folders, newFolder], doc.items);
+      void commitDocState([...displayedDoc.folders, newFolder], displayedDoc.items);
       revealAndHighlightEntity(newFolder, id);
       setEditorDraft(null);
       return null;
@@ -1225,7 +1369,7 @@ export default function App() {
     let newItem: BookmarkItem;
 
     if (targetParentId !== null) {
-      const count = doc.items.filter((it) => it.parentId === targetParentId).length;
+      const count = displayedDoc.items.filter((it) => it.parentId === targetParentId).length;
       newItem = {
         id,
         title: payload.title,
@@ -1244,7 +1388,7 @@ export default function App() {
         createdAt: now,
         updatedAt: now,
       };
-      const parentFolder = doc.folders.find((f) => f.id === targetParentId);
+      const parentFolder = displayedDoc.folders.find((f) => f.id === targetParentId);
       if (parentFolder) {
         revealAndHighlightEntity(parentFolder, parentFolder.id);
         showToast(`已添加至「${parentFolder.title}」`);
@@ -1273,7 +1417,7 @@ export default function App() {
       revealAndHighlightEntity(newItem, id);
     }
 
-    void commitDocState(doc.folders, [...doc.items, newItem]);
+    void commitDocState(displayedDoc.folders, [...displayedDoc.items, newItem]);
     setEditorDraft(null);
     return null;
   }
@@ -1282,20 +1426,20 @@ export default function App() {
     const nextMode: FolderDisplayMode = folder.displayMode === 'grid' ? 'list' : 'grid';
     const now = new Date().toISOString();
     commitDocState(
-      doc.folders.map((f) =>
+      displayedDoc.folders.map((f) =>
         f.id === folder.id ? { ...f, displayMode: nextMode, updatedAt: now } : f
       ),
-      doc.items
+      displayedDoc.items
     );
   }
 
   function handleSetFolderAccent(folder: FolderContainer, accent?: string) {
     const now = new Date().toISOString();
     commitDocState(
-      doc.folders.map((f) =>
+      displayedDoc.folders.map((f) =>
         f.id === folder.id ? { ...f, accent, updatedAt: now } : f
       ),
-      doc.items
+      displayedDoc.items
     );
   }
 
@@ -1303,10 +1447,10 @@ export default function App() {
     const now = new Date().toISOString();
     const nextPrivate = !folder.isPrivate;
     commitDocState(
-      doc.folders.map((f) =>
+      displayedDoc.folders.map((f) =>
         f.id === folder.id ? { ...f, isPrivate: nextPrivate, updatedAt: now } : f
       ),
-      doc.items
+      displayedDoc.items
     );
     showToast(nextPrivate ? `已将「${folder.title}」设为私密` : `已将「${folder.title}」设为公开`);
   }
@@ -1370,17 +1514,17 @@ export default function App() {
 
   const handleMoveItemsToFolder = useCallback(
     (itemIds: string[], folderId: string) => {
-      const folder = doc.folders.find((f) => f.id === folderId);
+      const folder = displayedDoc.folders.find((f) => f.id === folderId);
       if (!folder || itemIds.length === 0) return;
 
       const moveSet = new Set(itemIds);
-      const existingCount = doc.items.filter(
+      const existingCount = displayedDoc.items.filter(
         (i) => i.parentId === folderId && !moveSet.has(i.id)
       ).length;
       const now = new Date().toISOString();
       let offset = 0;
 
-      const nextItems = doc.items.map((it) => {
+      const nextItems = displayedDoc.items.map((it) => {
         if (!moveSet.has(it.id)) return it;
         return {
           ...it,
@@ -1391,16 +1535,16 @@ export default function App() {
       });
 
       setSelectedIds((prev) => prev.filter((id) => !moveSet.has(id)));
-      void commitDocState(doc.folders, nextItems);
+      void commitDocState(displayedDoc.folders, nextItems);
       showToast(`已将 ${itemIds.length} 个项目移入「${folder.title}」`);
     },
-    [doc.folders, doc.items, commitDocState, showToast]
+    [displayedDoc.folders, displayedDoc.items, commitDocState, showToast]
   );
 
   const handleMergeItemsToFolder = useCallback(
     (sourceItemId: string, targetItemId: string) => {
-      const source = doc.items.find((i) => i.id === sourceItemId);
-      const target = doc.items.find((i) => i.id === targetItemId);
+      const source = displayedDoc.items.find((i) => i.id === sourceItemId);
+      const target = displayedDoc.items.find((i) => i.id === targetItemId);
       if (!source || !target || target.parentId !== null || source.id === target.id) return;
 
       const now = new Date().toISOString();
@@ -1417,7 +1561,7 @@ export default function App() {
         updatedAt: now,
       };
 
-      const nextItems = doc.items.map((it) => {
+      const nextItems = displayedDoc.items.map((it) => {
         if (it.id === target.id) {
           return { ...it, parentId: newFolder.id, order: 0, updatedAt: now };
         }
@@ -1428,10 +1572,10 @@ export default function App() {
       });
 
       setSelectedIds([newFolder.id]);
-      void commitDocState([...doc.folders, newFolder], nextItems);
+      void commitDocState([...displayedDoc.folders, newFolder], nextItems);
       showToast(`已合并「${target.title}」与「${source.title}」为新文件夹`);
     },
-    [doc.folders, doc.items, commitDocState, showToast, settings.mergedFolderTitle]
+    [displayedDoc.folders, displayedDoc.items, commitDocState, showToast, settings.mergedFolderTitle]
   );
 
   const handleDropChildToCanvas = useCallback(
@@ -1439,12 +1583,12 @@ export default function App() {
       const now = new Date().toISOString();
       const posMap = new Map(nextEntities.map((e) => [e.id, e]));
 
-      const nextFolders = doc.folders.map((f) => {
+      const nextFolders = displayedDoc.folders.map((f) => {
         const upd = posMap.get(f.id);
         return upd ? { ...f, x: upd.x, y: upd.y, updatedAt: now } : f;
       });
 
-      const nextItems = doc.items.map((it) => {
+      const nextItems = displayedDoc.items.map((it) => {
         if (it.id === itemId) {
           const nextW = settings.dragOutItemSizeMode === 'preserve' ? clampGridSize(it.w) : 1;
           const nextH = settings.dragOutItemSizeMode === 'preserve' ? clampGridSize(it.h) : 1;
@@ -1466,54 +1610,61 @@ export default function App() {
         return it;
       });
 
-      const nextWidgets = (doc.widgets ?? []).map((w) => {
+      const nextWidgets = (displayedDoc.widgets ?? []).map((w) => {
         if (w.kind !== 'carousel' && w.kind !== 'note') return w;
         const upd = posMap.get(w.id);
         return upd ? { ...w, x: upd.x, y: upd.y, updatedAt: now } : w;
       });
 
       setSelectedIds([itemId]);
-      void commitDocState(nextFolders, nextItems, true, doc.zones ?? [], nextWidgets);
+      void commitDocState(nextFolders, nextItems, true, displayedDoc.zones ?? [], nextWidgets);
     },
-    [doc.folders, doc.items, doc.zones, doc.widgets, commitDocState, settings.dragOutItemSizeMode]
+    [
+      displayedDoc.folders,
+      displayedDoc.items,
+      displayedDoc.zones,
+      displayedDoc.widgets,
+      commitDocState,
+      settings.dragOutItemSizeMode,
+    ]
   );
 
   const handleReorderFolderItems = useCallback(
     (folderId: string, itemIds: string[]) => {
       const orderMap = new Map(itemIds.map((id, idx) => [id, idx]));
       const now = new Date().toISOString();
-      const nextItems = doc.items.map((it) => {
+      const nextItems = displayedDoc.items.map((it) => {
         if (it.parentId !== folderId) return it;
         const nextOrder = orderMap.get(it.id);
         return nextOrder !== undefined ? { ...it, order: nextOrder, updatedAt: now } : it;
       });
-      void commitDocState(doc.folders, nextItems);
+      void commitDocState(displayedDoc.folders, nextItems);
     },
-    [doc.folders, doc.items, commitDocState]
+    [displayedDoc.folders, displayedDoc.items, commitDocState]
   );
 
   function handleExtractItemToCanvas(itemId: string) {
-    const item = doc.items.find((i) => i.id === itemId);
+    const item = displayedDoc.items.find((i) => i.id === itemId);
     if (!item || item.parentId === null) return;
-    const srcFolder = doc.folders.find((f) => f.id === item.parentId);
+    const srcFolder = displayedDoc.folders.find((f) => f.id === item.parentId);
     const slot = findNearestFreeSlot(topLevelEntities, 1, 1, srcFolder?.x ?? 0, srcFolder?.y ?? 0);
     const now = new Date().toISOString();
 
-    const nextItems = doc.items.map((it) =>
+    const nextItems = displayedDoc.items.map((it) =>
       it.id === itemId
         ? { ...it, parentId: null, x: slot.x, y: slot.y, w: 1, h: 1, order: 0, updatedAt: now }
         : it
     );
-    void commitDocState(doc.folders, nextItems);
+    void commitDocState(displayedDoc.folders, nextItems);
     showToast(`已将「${item.title}」移出到桌面 (${slot.x}, ${slot.y})`);
   }
 
   function handleRequestDeleteFolder(folder: FolderContainer) {
-    const count = doc.items.filter((i) => i.parentId === folder.id).length;
+    const count = displayedDoc.items.filter((i) => i.parentId === folder.id).length;
     if (count === 0) {
       void commitDocState(
-        doc.folders.filter((f) => f.id !== folder.id),
-        doc.items
+        displayedDoc.folders.filter((f) => f.id !== folder.id),
+        displayedDoc.items
       );
       if (activeFolderId === folder.id) setActiveFolderId(null);
       if (editorDraft?.mode === 'edit-folder' && editorDraft.folder.id === folder.id) {
@@ -1526,17 +1677,17 @@ export default function App() {
   }
 
   function handleDissolveKeepItems(folderId: string) {
-    const folder = doc.folders.find((f) => f.id === folderId);
+    const folder = displayedDoc.folders.find((f) => f.id === folderId);
     if (!folder) return;
     const now = new Date().toISOString();
-    const nextFolders = doc.folders.filter((f) => f.id !== folderId);
+    const nextFolders = displayedDoc.folders.filter((f) => f.id !== folderId);
     const occupied = getTopLevelEntities({
       folders: nextFolders,
-      items: doc.items,
-      widgets: doc.widgets ?? [],
+      items: displayedDoc.items,
+      widgets: displayedDoc.widgets ?? [],
     }).map((e) => ({ x: e.x, y: e.y, w: e.w, h: e.h }));
 
-    const folderChildren = doc.items
+    const folderChildren = displayedDoc.items
       .filter((i) => i.parentId === folderId)
       .sort((a, b) => a.order - b.order);
     const slotMap = new Map<string, { x: number; y: number }>();
@@ -1547,7 +1698,7 @@ export default function App() {
       occupied.push({ x: slot.x, y: slot.y, w: 1, h: 1 });
     }
 
-    const nextItems = doc.items.map((it) => {
+    const nextItems = displayedDoc.items.map((it) => {
       const slot = slotMap.get(it.id);
       if (!slot) return it;
       return {
@@ -1573,7 +1724,7 @@ export default function App() {
   }
 
   function handleDeleteFolderAndItems(folderId: string) {
-    const folder = doc.folders.find((f) => f.id === folderId);
+    const folder = displayedDoc.folders.find((f) => f.id === folderId);
     setDissolveTarget(null);
     if (activeFolderId === folderId) setActiveFolderId(null);
     if (editorDraft?.mode === 'edit-folder' && editorDraft.folder.id === folderId) {
@@ -1581,8 +1732,8 @@ export default function App() {
     }
     setSelectedIds((prev) => prev.filter((id) => id !== folderId));
     void commitDocState(
-      doc.folders.filter((f) => f.id !== folderId),
-      doc.items.filter((i) => i.parentId !== folderId)
+      displayedDoc.folders.filter((f) => f.id !== folderId),
+      displayedDoc.items.filter((i) => i.parentId !== folderId)
     );
     if (folder) showToast(`已删除「${folder.title}」及其内部项目`);
   }
@@ -1682,7 +1833,13 @@ export default function App() {
       createdAt: now,
       updatedAt: now,
     };
-    void commitDocState(doc.folders, doc.items, true, [...(doc.zones ?? []), newZone], doc.widgets ?? []);
+    void commitDocState(
+      displayedDoc.folders,
+      displayedDoc.items,
+      true,
+      [...(displayedDoc.zones ?? []), newZone],
+      displayedDoc.widgets ?? []
+    );
     revealAndHighlightEntity(newZone, id);
     setInlineEditingId(id);
   }
@@ -1690,7 +1847,9 @@ export default function App() {
   function handleCreateZoneFromSelection() {
     if (!editMode) setEditMode(true);
     const selSet = new Set(selectedIds);
-    const textList = (doc.widgets ?? []).filter((w): w is FreeTextWidget => w.kind === 'text');
+    const textList = (displayedDoc.widgets ?? []).filter(
+      (w): w is FreeTextWidget => w.kind === 'text'
+    );
     const selectedBoxes = [
       ...topLevelEntities.filter((e) => selSet.has(e.id)),
       ...textList.filter((t) => selSet.has(t.id)),
@@ -1716,7 +1875,13 @@ export default function App() {
       createdAt: now,
       updatedAt: now,
     };
-    void commitDocState(doc.folders, doc.items, true, [...(doc.zones ?? []), newZone], doc.widgets ?? []);
+    void commitDocState(
+      displayedDoc.folders,
+      displayedDoc.items,
+      true,
+      [...(displayedDoc.zones ?? []), newZone],
+      displayedDoc.widgets ?? []
+    );
     revealAndHighlightEntity(newZone, id);
     setInlineEditingId(id);
   }
@@ -1742,11 +1907,11 @@ export default function App() {
       updatedAt: now,
     };
     void commitDocState(
-      doc.folders,
-      doc.items,
+      displayedDoc.folders,
+      displayedDoc.items,
       true,
-      doc.zones ?? [],
-      [...(doc.widgets ?? []), newNote]
+      displayedDoc.zones ?? [],
+      [...(displayedDoc.widgets ?? []), newNote]
     );
     revealAndHighlightEntity(newNote, id);
     setInlineEditingId(id);
@@ -1772,11 +1937,11 @@ export default function App() {
       updatedAt: now,
     };
     void commitDocState(
-      doc.folders,
-      doc.items,
+      displayedDoc.folders,
+      displayedDoc.items,
       true,
-      doc.zones ?? [],
-      [...(doc.widgets ?? []), newText]
+      displayedDoc.zones ?? [],
+      [...(displayedDoc.widgets ?? []), newText]
     );
     revealAndHighlightEntity(newText, id);
     setInlineEditingId(id);
@@ -1846,13 +2011,13 @@ export default function App() {
     if (nextTitle === zone.title) return;
     const now = new Date().toISOString();
     void commitDocState(
-      doc.folders,
-      doc.items,
+      displayedDoc.folders,
+      displayedDoc.items,
       true,
-      (doc.zones ?? []).map((z) =>
+      (displayedDoc.zones ?? []).map((z) =>
         z.id === zone.id ? { ...z, title: nextTitle, updatedAt: now } : z
       ),
-      doc.widgets ?? []
+      displayedDoc.widgets ?? []
     );
   }
 
@@ -1861,11 +2026,11 @@ export default function App() {
     if (title === note.title && content === note.content) return;
     const now = new Date().toISOString();
     void commitDocState(
-      doc.folders,
-      doc.items,
+      displayedDoc.folders,
+      displayedDoc.items,
       true,
-      doc.zones ?? [],
-      (doc.widgets ?? []).map((w) =>
+      displayedDoc.zones ?? [],
+      (displayedDoc.widgets ?? []).map((w) =>
         w.id === note.id && w.kind === 'note' ? { ...w, title, content, updatedAt: now } : w
       )
     );
@@ -1876,11 +2041,11 @@ export default function App() {
     if (nextText === widget.text) return;
     const now = new Date().toISOString();
     void commitDocState(
-      doc.folders,
-      doc.items,
+      displayedDoc.folders,
+      displayedDoc.items,
       true,
-      doc.zones ?? [],
-      (doc.widgets ?? []).map((w) =>
+      displayedDoc.zones ?? [],
+      (displayedDoc.widgets ?? []).map((w) =>
         w.id === widget.id && w.kind === 'text' ? { ...w, text: nextText, updatedAt: now } : w
       )
     );
@@ -1889,8 +2054,8 @@ export default function App() {
   function handleSetItemAccent(item: BookmarkItem, accent?: string) {
     const now = new Date().toISOString();
     void commitDocState(
-      doc.folders,
-      doc.items.map((it) => (it.id === item.id ? { ...it, accent, updatedAt: now } : it))
+      displayedDoc.folders,
+      displayedDoc.items.map((it) => (it.id === item.id ? { ...it, accent, updatedAt: now } : it))
     );
   }
 
@@ -1900,11 +2065,11 @@ export default function App() {
   ) {
     const now = new Date().toISOString();
     void commitDocState(
-      doc.folders,
-      doc.items,
+      displayedDoc.folders,
+      displayedDoc.items,
       true,
-      doc.zones ?? [],
-      (doc.widgets ?? []).map((w) =>
+      displayedDoc.zones ?? [],
+      (displayedDoc.widgets ?? []).map((w) =>
         w.id === widget.id && w.kind === 'text' ? { ...w, ...patch, updatedAt: now } : w
       )
     );
@@ -1913,11 +2078,11 @@ export default function App() {
   function handleSetNoteTint(widget: NoteWidget, tint?: string) {
     const now = new Date().toISOString();
     void commitDocState(
-      doc.folders,
-      doc.items,
+      displayedDoc.folders,
+      displayedDoc.items,
       true,
-      doc.zones ?? [],
-      (doc.widgets ?? []).map((w) =>
+      displayedDoc.zones ?? [],
+      (displayedDoc.widgets ?? []).map((w) =>
         w.id === widget.id && w.kind === 'note' ? { ...w, tint, updatedAt: now } : w
       )
     );
@@ -1929,11 +2094,11 @@ export default function App() {
   ) {
     const now = new Date().toISOString();
     void commitDocState(
-      doc.folders,
-      doc.items,
+      displayedDoc.folders,
+      displayedDoc.items,
       true,
-      doc.zones ?? [],
-      (doc.widgets ?? []).map((w) =>
+      displayedDoc.zones ?? [],
+      (displayedDoc.widgets ?? []).map((w) =>
         w.id === widget.id && w.kind === 'carousel' ? { ...w, ...patch, updatedAt: now } : w
       )
     );
@@ -1968,11 +2133,13 @@ export default function App() {
   function handleSetZoneAccent(zone: ZoneContainer, accent?: string) {
     const now = new Date().toISOString();
     void commitDocState(
-      doc.folders,
-      doc.items,
+      displayedDoc.folders,
+      displayedDoc.items,
       true,
-      (doc.zones ?? []).map((z) => (z.id === zone.id ? { ...z, accent, updatedAt: now } : z)),
-      doc.widgets ?? []
+      (displayedDoc.zones ?? []).map((z) =>
+        z.id === zone.id ? { ...z, accent, updatedAt: now } : z
+      ),
+      displayedDoc.widgets ?? []
     );
   }
 
@@ -1980,13 +2147,13 @@ export default function App() {
     const now = new Date().toISOString();
     const nextPrivate = !zone.isPrivate;
     void commitDocState(
-      doc.folders,
-      doc.items,
+      displayedDoc.folders,
+      displayedDoc.items,
       true,
-      (doc.zones ?? []).map((z) =>
+      (displayedDoc.zones ?? []).map((z) =>
         z.id === zone.id ? { ...z, isPrivate: nextPrivate, updatedAt: now } : z
       ),
-      doc.widgets ?? []
+      displayedDoc.widgets ?? []
     );
     showToast(nextPrivate ? `已将分区「${zone.title}」设为私密` : `已将分区「${zone.title}」设为公开`);
   }
@@ -1995,11 +2162,11 @@ export default function App() {
     setZwDraft((cur) => (cur?.mode === 'edit-zone' && cur.zone.id === zoneId ? null : cur));
     setSelectedIds((prev) => prev.filter((id) => id !== zoneId));
     void commitDocState(
-      doc.folders,
-      doc.items,
+      displayedDoc.folders,
+      displayedDoc.items,
       true,
-      (doc.zones ?? []).filter((z) => z.id !== zoneId),
-      doc.widgets ?? []
+      (displayedDoc.zones ?? []).filter((z) => z.id !== zoneId),
+      displayedDoc.widgets ?? []
     );
   }
 
@@ -2007,11 +2174,11 @@ export default function App() {
     const now = new Date().toISOString();
     const nextPrivate = !note.isPrivate;
     void commitDocState(
-      doc.folders,
-      doc.items,
+      displayedDoc.folders,
+      displayedDoc.items,
       true,
-      doc.zones ?? [],
-      (doc.widgets ?? []).map((w) =>
+      displayedDoc.zones ?? [],
+      (displayedDoc.widgets ?? []).map((w) =>
         w.id === note.id && w.kind === 'note' ? { ...w, isPrivate: nextPrivate, updatedAt: now } : w
       )
     );
@@ -2027,11 +2194,11 @@ export default function App() {
     );
     setSelectedIds((prev) => prev.filter((id) => id !== widgetId));
     void commitDocState(
-      doc.folders,
-      doc.items,
+      displayedDoc.folders,
+      displayedDoc.items,
       true,
-      doc.zones ?? [],
-      (doc.widgets ?? []).filter((w) => w.id !== widgetId)
+      displayedDoc.zones ?? [],
+      (displayedDoc.widgets ?? []).filter((w) => w.id !== widgetId)
     );
   }
 
@@ -2085,8 +2252,8 @@ export default function App() {
   function handleSaveZoneWidget(payload: ZoneWidgetSavePayload): string | null {
     if (!zwDraft) return null;
     const now = new Date().toISOString();
-    const curZones = doc.zones ?? [];
-    const curWidgets = doc.widgets ?? [];
+    const curZones = displayedDoc.zones ?? [];
+    const curWidgets = displayedDoc.widgets ?? [];
 
     if (payload.kind === 'zone') {
       if (zwDraft.mode === 'edit-zone') {
@@ -2103,7 +2270,7 @@ export default function App() {
               }
             : z
         );
-        void commitDocState(doc.folders, doc.items, true, nextZones, curWidgets);
+        void commitDocState(displayedDoc.folders, displayedDoc.items, true, nextZones, curWidgets);
         setZwDraft(null);
         return null;
       }
@@ -2124,7 +2291,13 @@ export default function App() {
         createdAt: now,
         updatedAt: now,
       };
-      void commitDocState(doc.folders, doc.items, true, [...curZones, newZone], curWidgets);
+      void commitDocState(
+        displayedDoc.folders,
+        displayedDoc.items,
+        true,
+        [...curZones, newZone],
+        curWidgets
+      );
       revealAndHighlightEntity(newZone, id);
       setZwDraft(null);
       return null;
@@ -2147,7 +2320,7 @@ export default function App() {
               }
             : w
         );
-        void commitDocState(doc.folders, doc.items, true, curZones, nextWidgets);
+        void commitDocState(displayedDoc.folders, displayedDoc.items, true, curZones, nextWidgets);
         setZwDraft(null);
         return null;
       }
@@ -2171,7 +2344,13 @@ export default function App() {
         createdAt: now,
         updatedAt: now,
       };
-      void commitDocState(doc.folders, doc.items, true, curZones, [...curWidgets, newText]);
+      void commitDocState(
+        displayedDoc.folders,
+        displayedDoc.items,
+        true,
+        curZones,
+        [...curWidgets, newText]
+      );
       revealAndHighlightEntity(newText, id);
       setZwDraft(null);
       return null;
@@ -2180,11 +2359,11 @@ export default function App() {
     if (payload.kind === 'carousel') {
       if (zwDraft.mode === 'edit-carousel') {
         const existing = zwDraft.widget;
-        let nextDoc = doc;
+        let nextDoc = displayedDoc;
         if (payload.w !== existing.w || payload.h !== existing.h) {
           const res = solveResize(topLevelEntities, existing.id, payload.w, payload.h);
           if (!res.ok) return res.message;
-          nextDoc = applyEntityLayoutToDoc(doc, res.entities, now);
+          nextDoc = applyEntityLayoutToDoc(displayedDoc, res.entities, now);
         }
         const nextWidgets = (nextDoc.widgets ?? curWidgets).map((w) =>
           w.id === existing.id && w.kind === 'carousel'
@@ -2224,7 +2403,13 @@ export default function App() {
         createdAt: now,
         updatedAt: now,
       };
-      void commitDocState(doc.folders, doc.items, true, curZones, [...curWidgets, newCarousel]);
+      void commitDocState(
+        displayedDoc.folders,
+        displayedDoc.items,
+        true,
+        curZones,
+        [...curWidgets, newCarousel]
+      );
       revealAndHighlightEntity(newCarousel, id);
       setZwDraft(null);
       return null;
@@ -2233,11 +2418,11 @@ export default function App() {
     // NoteWidget
     if (zwDraft.mode === 'edit-note') {
       const existing = zwDraft.widget;
-      let nextDoc = doc;
+      let nextDoc = displayedDoc;
       if (payload.w !== existing.w || payload.h !== existing.h) {
         const res = solveResize(topLevelEntities, existing.id, payload.w, payload.h);
         if (!res.ok) return res.message;
-        nextDoc = applyEntityLayoutToDoc(doc, res.entities, now);
+        nextDoc = applyEntityLayoutToDoc(displayedDoc, res.entities, now);
       }
       const nextWidgets = (nextDoc.widgets ?? curWidgets).map((w) =>
         w.id === existing.id && w.kind === 'note'
@@ -2276,16 +2461,22 @@ export default function App() {
       createdAt: now,
       updatedAt: now,
     };
-    void commitDocState(doc.folders, doc.items, true, curZones, [...curWidgets, newNote]);
+    void commitDocState(
+      displayedDoc.folders,
+      displayedDoc.items,
+      true,
+      curZones,
+      [...curWidgets, newNote]
+    );
     revealAndHighlightEntity(newNote, id);
     setZwDraft(null);
     return null;
   }
 
-  const activeFolder = doc.folders.find((f) => f.id === activeFolderId) ?? null;
+  const activeFolder = displayedDoc.folders.find((f) => f.id === activeFolderId) ?? null;
   const activeFolderItems = useMemo(() => {
     if (!activeFolder) return [];
-    const base = doc.items
+    const base = displayedDoc.items
       .filter((i) => i.parentId === activeFolder.id)
       .sort((a, b) => a.order - b.order);
     if (reorderPreview && reorderPreview.folderId === activeFolder.id) {
@@ -2295,7 +2486,7 @@ export default function App() {
         .filter((x): x is BookmarkItem => Boolean(x));
     }
     return base;
-  }, [activeFolder, doc.items, reorderPreview]);
+  }, [activeFolder, displayedDoc.items, reorderPreview]);
 
   const activeMobileView: MobileDefaultView = mobileViewOverride ?? settings.mobileDefaultView;
   const showMobilePaged = isMobile && activeMobileView === 'paged';
@@ -2304,25 +2495,25 @@ export default function App() {
     (mode: MobileDefaultView) => {
       setMobileViewOverride(mode);
       if (mode === 'canvas') {
-        setView(computeInitialView(doc, settings));
+        setView(computeInitialView(displayedDoc, activeSettingsForViewport));
       }
     },
-    [doc, settings]
+    [displayedDoc, activeSettingsForViewport]
   );
 
   const selectedSet = new Set(selectedIds);
-  const selectedItemCount = doc.items.filter(
+  const selectedItemCount = displayedDoc.items.filter(
     (i) => i.parentId === null && selectedSet.has(i.id)
   ).length;
   const canWrapInZone = useMemo(() => {
     const textIds = new Set(
-      (doc.widgets ?? []).filter((w) => w.kind === 'text').map((w) => w.id)
+      (displayedDoc.widgets ?? []).filter((w) => w.kind === 'text').map((w) => w.id)
     );
     return (
       topLevelEntities.some((e) => selectedSet.has(e.id)) ||
       selectedIds.some((id) => textIds.has(id))
     );
-  }, [doc.widgets, topLevelEntities, selectedIds, selectedSet]);
+  }, [displayedDoc.widgets, topLevelEntities, selectedIds, selectedSet]);
 
   const editInspectorTarget: EditInspectorTarget | null = useMemo(() => {
     if (selectedIds.length !== 1) return null;
@@ -2334,18 +2525,18 @@ export default function App() {
       if (ent.kind === 'note') return { kind: 'note', widget: ent };
       return { kind: 'carousel', widget: ent };
     }
-    const zone = (doc.zones ?? []).find((z) => z.id === selId);
+    const zone = (displayedDoc.zones ?? []).find((z) => z.id === selId);
     if (zone) return { kind: 'zone', zone };
-    const textW = (doc.widgets ?? []).find(
+    const textW = (displayedDoc.widgets ?? []).find(
       (w): w is FreeTextWidget => w.kind === 'text' && w.id === selId
     );
     if (textW) return { kind: 'text', widget: textW };
     return null;
-  }, [selectedIds, topLevelEntities, doc.zones, doc.widgets]);
+  }, [selectedIds, topLevelEntities, displayedDoc.zones, displayedDoc.widgets]);
 
   const visibleNotes = useMemo(
-    () => (doc.widgets ?? []).filter((w): w is NoteWidget => w.kind === 'note'),
-    [doc.widgets]
+    () => (displayedDoc.widgets ?? []).filter((w): w is NoteWidget => w.kind === 'note'),
+    [displayedDoc.widgets]
   );
 
   return (
@@ -2362,6 +2553,23 @@ export default function App() {
           <SettingsView
             settings={settings}
             doc={doc}
+            lockedViewportOrigin={doc.publicLayout?.viewportOrigin ?? null}
+            onResetLockedViewportOrigin={() => {
+              const curDoc = docRef.current;
+              const curPl = curDoc.publicLayout ?? { positions: {} };
+              commitDocState(
+                curDoc.folders,
+                curDoc.items,
+                true,
+                curDoc.zones,
+                curDoc.widgets,
+                {
+                  nextPublicLayout: { ...curPl, viewportOrigin: null },
+                  replaceCanonical: true,
+                }
+              );
+              showToast('已重置「解锁前」视野锚点');
+            }}
             dark={dark}
             themeMode={themeMode}
             onToggleDark={toggleDark}
@@ -2382,8 +2590,8 @@ export default function App() {
           {showMobilePaged ? (
             <MobileNavView
               settings={settings}
-              folders={doc.folders}
-              items={doc.items}
+              folders={displayedDoc.folders}
+              items={displayedDoc.items}
               notes={visibleNotes}
               loading={loading}
               unlocked={unlocked}
@@ -2419,6 +2627,8 @@ export default function App() {
                 onLockToggle={handleLockToggle}
                 editMode={editMode}
                 onToggleEditMode={() => void handleToggleEditMode()}
+                layoutTarget={layoutTarget}
+                onSwitchToUnlockedLayout={() => handleSwitchLayoutTarget('unlocked')}
                 saveStatus={saveStatus}
                 finishingEdit={finishingEdit}
                 onOpenSettings={() => setSettingsOpen(true)}
@@ -2438,12 +2648,12 @@ export default function App() {
                 <InfiniteCanvas
                   ref={canvasRef}
                   entities={topLevelEntities}
-                  folders={doc.folders}
-                  items={doc.items}
-                  zones={doc.zones ?? []}
-                  widgets={doc.widgets ?? []}
-                  grid={doc.grid}
-                  settings={settings}
+                  folders={displayedDoc.folders}
+                  items={displayedDoc.items}
+                  zones={displayedDoc.zones ?? []}
+                  widgets={displayedDoc.widgets ?? []}
+                  grid={displayedDoc.grid}
+                  settings={activeSettingsForViewport}
                   editMode={editMode}
                   marqueeMode={marqueeMode}
                   selectedIds={selectedIds}
@@ -2494,9 +2704,9 @@ export default function App() {
 
               {!loading && settings.showFolderNav && (
                 <FolderNavBar
-                  folders={doc.folders}
-                  items={doc.items}
-                  zones={doc.zones ?? []}
+                  folders={displayedDoc.folders}
+                  items={displayedDoc.items}
+                  zones={displayedDoc.zones ?? []}
                   editMode={editMode}
                   onFocusFolder={handleFocusFolder}
                   onFocusZone={handleFocusZone}
@@ -2521,13 +2731,16 @@ export default function App() {
                   selectedItemCount={selectedItemCount}
                   selectedTarget={editInspectorTarget}
                   canWrapInZone={canWrapInZone}
-                  folders={doc.folders}
+                  folders={displayedDoc.folders}
                   showAnchorButton={
                     settings.desktopViewportMode === 'anchor' ||
                     settings.mobileViewportMode === 'anchor'
                   }
                   canUndo={undoStack.length > 0}
                   canRedo={redoStack.length > 0}
+                  layoutTarget={layoutTarget}
+                  onChangeLayoutTarget={handleSwitchLayoutTarget}
+                  onSyncUnlockedToLocked={handleSyncUnlockedToLocked}
                   onCreateItem={() => openItemCreator()}
                   onCreateFolder={() => openFolderCreator()}
                   onCreateZone={() =>
@@ -2546,19 +2759,19 @@ export default function App() {
                       handleEditAnyEntity(entity);
                       return;
                     }
-                    const zone = (doc.zones ?? []).find((z) => z.id === selId);
+                    const zone = (displayedDoc.zones ?? []).find((z) => z.id === selId);
                     if (zone) {
                       setZwDraft({ mode: 'edit-zone', zone });
                       return;
                     }
-                    const widget = (doc.widgets ?? []).find((w) => w.id === selId);
+                    const widget = (displayedDoc.widgets ?? []).find((w) => w.id === selId);
                     if (widget) {
                       handleEditWidget(widget);
                     }
                   }}
                   onDeleteSelected={() => handleDeleteEntities(selectedIds)}
                   onMoveSelectedItemsToFolder={(folderId) => {
-                    const itemIds = doc.items
+                    const itemIds = displayedDoc.items
                       .filter((i) => i.parentId === null && selectedSet.has(i.id))
                       .map((i) => i.id);
                     handleMoveItemsToFolder(itemIds, folderId);
@@ -2605,8 +2818,8 @@ export default function App() {
                 onExtractItemToCanvas={handleExtractItemToCanvas}
                 onDeleteItem={(itemId) =>
                   void commitDocState(
-                    doc.folders,
-                    doc.items.filter((i) => i.id !== itemId)
+                    displayedDoc.folders,
+                    displayedDoc.items.filter((i) => i.id !== itemId)
                   )
                 }
                 onModalChildPointerDown={(e, folder, item, modalRect) =>
@@ -2620,7 +2833,7 @@ export default function App() {
             {editorDraft && (
               <ItemEditorModal
                 draft={editorDraft}
-                folders={doc.folders}
+                folders={displayedDoc.folders}
                 settings={settings}
                 onClose={() => setEditorDraft(null)}
                 onSave={handleSaveEditor}
@@ -2628,8 +2841,8 @@ export default function App() {
                 onRequestDeleteItem={(item) => {
                   setEditorDraft(null);
                   void commitDocState(
-                    doc.folders,
-                    doc.items.filter((i) => i.id !== item.id)
+                    displayedDoc.folders,
+                    displayedDoc.items.filter((i) => i.id !== item.id)
                   );
                   showToast('已删除书签');
                 }}
@@ -2649,7 +2862,9 @@ export default function App() {
             {dissolveTarget && (
               <DissolveFolderModal
                 folder={dissolveTarget}
-                itemCount={doc.items.filter((i) => i.parentId === dissolveTarget.id).length}
+                itemCount={
+                  displayedDoc.items.filter((i) => i.parentId === dissolveTarget.id).length
+                }
                 onClose={() => setDissolveTarget(null)}
                 onDissolveKeepItems={handleDissolveKeepItems}
                 onDeleteFolderAndItems={handleDeleteFolderAndItems}
@@ -2659,10 +2874,10 @@ export default function App() {
             {!showMobilePaged && searchOpen && (
               <SearchPalette
                 open={searchOpen}
-                folders={doc.folders}
-                items={doc.items}
-                zones={doc.zones ?? []}
-                widgets={doc.widgets ?? []}
+                folders={displayedDoc.folders}
+                items={displayedDoc.items}
+                zones={displayedDoc.zones ?? []}
+                widgets={displayedDoc.widgets ?? []}
                 openTarget={settings.openTarget}
                 onClose={() => setSearchOpen(false)}
                 onOpenFolder={(folder) => setActiveFolderId(folder.id)}
@@ -2675,7 +2890,7 @@ export default function App() {
                 menu={contextMenu}
                 unlocked={unlocked}
                 editMode={editMode}
-                folders={doc.folders}
+                folders={displayedDoc.folders}
                 onClose={() => setContextMenu(null)}
                 onOpenFolder={(folder) => setActiveFolderId(folder.id)}
                 onCycleFolderMode={handleCycleFolderMode}
@@ -2691,8 +2906,8 @@ export default function App() {
                 onExtractItemToCanvas={handleExtractItemToCanvas}
                 onDeleteItem={(itemId) =>
                   commitDocState(
-                    doc.folders,
-                    doc.items.filter((i) => i.id !== itemId)
+                    displayedDoc.folders,
+                    displayedDoc.items.filter((i) => i.id !== itemId)
                   )
                 }
                 onCopyUrl={handleCopyUrl}
@@ -2725,9 +2940,8 @@ export default function App() {
                   const nextAction = unlockModal.afterUnlock;
                   const widgetPending = unlockModal.widgetToEdit;
                   setUnlockModal({ open: false });
-                  const latestDoc = await refreshCanvas(
-                    resolveActiveViewportMode(settings) === 'auto'
-                  );
+                  setLayoutTarget('unlocked');
+                  const latestDoc = await refreshCanvas(true);
                   if (nextAction === 'edit') {
                     sessionDirtyRef.current = false;
                     setEditMode(true);

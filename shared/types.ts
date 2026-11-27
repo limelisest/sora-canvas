@@ -155,6 +155,18 @@ export interface NoteWidget {
 
 export type CanvasWidget = CarouselWidget | FreeTextWidget | NoteWidget;
 
+export interface LayoutOverride {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface PublicLayoutConfig {
+  positions: Record<string, LayoutOverride>;
+  viewportOrigin?: { x: number; y: number } | null;
+}
+
 export interface CanvasDocument {
   version: 2;
   updatedAt: string;
@@ -163,6 +175,7 @@ export interface CanvasDocument {
   items: BookmarkItem[];
   zones?: ZoneContainer[];
   widgets?: CanvasWidget[];
+  publicLayout?: PublicLayoutConfig;
 }
 
 export interface CanvasResponse extends CanvasDocument {

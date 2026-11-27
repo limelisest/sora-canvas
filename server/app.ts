@@ -10,6 +10,11 @@ import type { AgentOp, CanvasDocument, CanvasResponse, SiteSettings } from '../s
 import { GRID_DENSITY_MAP } from '../shared/settings.js';
 import { validateCanvasDocument } from '../shared/gridEngine.js';
 import {
+  normalizePublicLayout,
+  projectPublicCanvas,
+  reconcilePublicLayout,
+} from '../shared/dualLayout.js';
+import {
   clearSessionCookie,
   ensureAuthConfig,
   isAuthenticated,
@@ -210,12 +215,15 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         settings,
       };
     }
-    const { doc: publicDoc, hasPrivateHidden } = sanitizeCanvasForPublic(doc);
+    const { doc: publicDoc, hasPrivateHidden, publicViewportOrigin } = sanitizeCanvasForPublic(doc);
     return {
       ...publicDoc,
       unlocked: false,
       hasPrivateHidden,
-      settings,
+      settings: {
+        ...settings,
+        viewportOrigin: publicViewportOrigin,
+      },
     };
   });
 
@@ -231,18 +239,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         return reply.code(400).send({ ok: false, error: '请求体必须包含 folders 与 items 数组' });
       }
 
-      const check = validateCanvasDocument({
-        folders: body.folders,
-        items: body.items,
-        zones: Array.isArray(body.zones) ? body.zones : [],
-        widgets: Array.isArray(body.widgets) ? body.widgets : [],
-      });
-      if (!check.valid) {
-        return reply.code(409).send({ ok: false, error: check.error || '画布实体存在重叠或非法参数' });
-      }
-
       const [existing, settings] = await Promise.all([loadCanvas(dataDir), loadSettings(dataDir)]);
-      const nextDoc: CanvasDocument = {
+      const normalizedPublicLayout = normalizePublicLayout(body.publicLayout);
+      const rawNextDoc: CanvasDocument = {
         version: 2,
         updatedAt: new Date().toISOString(),
         grid: body.grid ?? existing.grid,
@@ -250,7 +249,20 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         items: body.items,
         zones: Array.isArray(body.zones) ? body.zones : [],
         widgets: Array.isArray(body.widgets) ? body.widgets : [],
+        ...(normalizedPublicLayout ? { publicLayout: normalizedPublicLayout } : {}),
       };
+
+      const nextDoc = reconcilePublicLayout(rawNextDoc);
+      const check = validateCanvasDocument(nextDoc);
+      if (!check.valid) {
+        return reply.code(409).send({ ok: false, error: check.error || '画布实体存在重叠或非法参数' });
+      }
+      const publicCheck = validateCanvasDocument(projectPublicCanvas(nextDoc).doc);
+      if (!publicCheck.valid) {
+        return reply
+          .code(409)
+          .send({ ok: false, error: publicCheck.error || '公开布局存在重叠或非法参数' });
+      }
 
       const saved = await saveCanvas(dataDir, nextDoc, 'canvas_put');
       if (request.query?.compact === '1') {
@@ -696,12 +708,16 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
             settings,
           };
         } else {
-          const { doc: publicDoc, hasPrivateHidden } = sanitizeCanvasForPublic(doc);
+          const { doc: publicDoc, hasPrivateHidden, publicViewportOrigin } =
+            sanitizeCanvasForPublic(doc);
           bootPayload = {
             ...publicDoc,
             unlocked: false,
             hasPrivateHidden,
-            settings,
+            settings: {
+              ...settings,
+              viewportOrigin: publicViewportOrigin,
+            },
           };
         }
 

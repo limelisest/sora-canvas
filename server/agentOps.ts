@@ -22,6 +22,7 @@ import {
   solveResize,
   validateCanvasDocument,
 } from '../shared/gridEngine.js';
+import { reconcilePublicLayout } from '../shared/dualLayout.js';
 
 export class AgentOpError extends Error {
   statusCode: number;
@@ -51,6 +52,22 @@ function cloneDocument(doc: CanvasDocument): CanvasDocument {
         ? { ...w, images: w.images.map((img) => ({ ...img })) }
         : { ...w }
     ),
+    ...(doc.publicLayout
+      ? {
+          publicLayout: {
+            positions: Object.fromEntries(
+              Object.entries(doc.publicLayout.positions).map(([k, v]) => [k, { ...v }])
+            ),
+            ...(doc.publicLayout.viewportOrigin !== undefined
+              ? {
+                  viewportOrigin: doc.publicLayout.viewportOrigin
+                    ? { ...doc.publicLayout.viewportOrigin }
+                    : null,
+                }
+              : {}),
+          },
+        }
+      : {}),
   };
 }
 
@@ -628,7 +645,7 @@ export function applyAgentOps(doc: CanvasDocument, ops: readonly AgentOp[]): Can
   }
 
   current.updatedAt = now;
-  return current;
+  return reconcilePublicLayout(current);
 }
 
 export function buildAgentGuideJson() {

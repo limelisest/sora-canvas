@@ -13,7 +13,12 @@ import type {
   ZoneContainer,
 } from '../shared/types.js';
 import { normalizeSiteSettings } from '../shared/settings.js';
-import { clampZoneSize, isEntityInsideZone, validateCanvasDocument } from '../shared/gridEngine.js';
+import { clampZoneSize, validateCanvasDocument } from '../shared/gridEngine.js';
+import {
+  normalizePublicLayout,
+  projectPublicCanvas,
+  reconcilePublicLayout,
+} from '../shared/dualLayout.js';
 
 const MAX_HISTORY_SNAPSHOTS = 30;
 const SNAPSHOT_COALESCE_MS = 5 * 60 * 1000;
@@ -502,12 +507,15 @@ export function normalizeDocument(
         })
       : [];
     const widgets: CanvasWidget[] = Array.isArray(rawDoc.widgets) ? rawDoc.widgets : [];
+    const publicLayout = normalizePublicLayout(rawDoc.publicLayout);
+    const { publicLayout: _omit, ...restDoc } = rawDoc;
     return {
       doc: {
-        ...rawDoc,
+        ...restDoc,
         folders,
         zones,
         widgets,
+        ...(publicLayout ? { publicLayout } : {}),
       },
       migrated: modeMigrated,
     };
@@ -686,9 +694,14 @@ export async function saveCanvas(
   nextDoc: CanvasDocument,
   reason = 'manual_save'
 ): Promise<CanvasDocument> {
-  const validation = validateCanvasDocument(nextDoc);
+  const reconciled = reconcilePublicLayout(nextDoc);
+  const validation = validateCanvasDocument(reconciled);
   if (!validation.valid) {
     throw new Error(validation.error || '画布布局校验失败');
+  }
+  const publicValidation = validateCanvasDocument(projectPublicCanvas(reconciled).doc);
+  if (!publicValidation.valid) {
+    throw new Error(publicValidation.error || '公开布局校验失败');
   }
 
   const prev = await loadCanvas(dataDir);
@@ -711,11 +724,12 @@ export async function saveCanvas(
   const stamped: CanvasDocument = {
     version: 2,
     updatedAt: new Date().toISOString(),
-    grid: nextDoc.grid ?? { ...DEFAULT_GRID },
-    folders: nextDoc.folders,
-    items: nextDoc.items,
-    zones: nextDoc.zones ?? [],
-    widgets: nextDoc.widgets ?? [],
+    grid: reconciled.grid ?? { ...DEFAULT_GRID },
+    folders: reconciled.folders,
+    items: reconciled.items,
+    zones: reconciled.zones ?? [],
+    widgets: reconciled.widgets ?? [],
+    ...(reconciled.publicLayout ? { publicLayout: reconciled.publicLayout } : {}),
   };
 
   const canvasPath = path.join(dataDir, 'canvas.json');
@@ -787,59 +801,9 @@ export async function restoreHistorySnapshot(
 export function sanitizeCanvasForPublic(doc: CanvasDocument): {
   doc: CanvasDocument;
   hasPrivateHidden: boolean;
+  publicViewportOrigin: { x: number; y: number } | null;
 } {
-  const allZones = doc.zones ?? [];
-  const allWidgets = doc.widgets ?? [];
-
-  const privateZones = allZones.filter((z) => z.isPrivate);
-  const publicZones = allZones.filter((z) => !z.isPrivate);
-
-  const privateFolderIds = new Set<string>();
-  const publicFolders: FolderContainer[] = [];
-
-  for (const folder of doc.folders) {
-    if (folder.isPrivate || privateZones.some((pz) => isEntityInsideZone(folder, pz))) {
-      privateFolderIds.add(folder.id);
-    } else {
-      publicFolders.push(folder);
-    }
-  }
-
-  let hiddenTopItems = 0;
-  const publicItems = doc.items.filter((item) => {
-    if (item.parentId !== null) {
-      return !privateFolderIds.has(item.parentId);
-    }
-    const insidePrivateZone = privateZones.some((pz) => isEntityInsideZone(item, pz));
-    if (insidePrivateZone) {
-      hiddenTopItems++;
-      return false;
-    }
-    return true;
-  });
-
-  const publicWidgets = allWidgets.filter((widget) => {
-    if (widget.kind === 'note' && widget.isPrivate) return false;
-    if (privateZones.some((pz) => isEntityInsideZone(widget, pz))) return false;
-    return true;
-  });
-
-  const hasPrivateHidden =
-    privateZones.length > 0 ||
-    privateFolderIds.size > 0 ||
-    hiddenTopItems > 0 ||
-    publicWidgets.length < allWidgets.length;
-
-  return {
-    doc: {
-      ...doc,
-      folders: publicFolders,
-      items: publicItems,
-      zones: publicZones,
-      widgets: publicWidgets,
-    },
-    hasPrivateHidden,
-  };
+  return projectPublicCanvas(doc);
 }
 
 const UPLOAD_REF_RE = /\/api\/uploads\/([a-f0-9]{16,64}\.(?:png|jpg|jpeg|webp|gif|avif))/gi;

@@ -69,6 +69,8 @@ function formatSnapshotReason(reason: string): string {
 interface SettingsViewProps {
   settings: SiteSettings;
   doc: CanvasDocument;
+  lockedViewportOrigin?: { x: number; y: number } | null;
+  onResetLockedViewportOrigin?: () => void;
   dark: boolean;
   themeMode: ThemeMode;
   onToggleDark: () => void;
@@ -85,6 +87,8 @@ const BRAND_ACCENT_PRESETS = ['#ff5500', '#10b981', '#f59e0b', '#3b82f6', '#8b5c
 export function SettingsView({
   settings,
   doc,
+  lockedViewportOrigin,
+  onResetLockedViewportOrigin,
   dark,
   themeMode,
   onToggleDark,
@@ -902,21 +906,12 @@ export function SettingsView({
                 <div className="min-w-0">
                   <div className="font-medium flex items-center gap-1.5">
                     <Crosshair size={13} className="text-[var(--accent-orange)]" />
-                    <span>视野锚点与自动缩放（电脑 / 手机独立）</span>
+                    <span>视野锚点与自动缩放（电脑 / 手机 &amp; 解锁双布局独立）</span>
                   </div>
                   <div className="text-[11px] text-[var(--ink-muted)] mt-0.5 leading-relaxed">
-                    启用锚点时默认以 100% 居中于锚点位置；关闭时按当前可见布局自动适配缩放。
+                    启用锚点时默认以 100% 居中于锚点位置；关闭时按当前可见布局自动适配缩放。在编辑模式切换「解锁后 / 解锁前布局」后可各自设置独立视野锚点。
                   </div>
                 </div>
-                {settings.viewportOrigin && (
-                  <button
-                    type="button"
-                    onClick={() => void commitPatch({ viewportOrigin: null })}
-                    className="shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium bg-[var(--bg-card)] border border-[var(--border-hair)] hover:border-[var(--border-strong)] cursor-pointer"
-                  >
-                    重置锚点坐标
-                  </button>
-                )}
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -963,11 +958,46 @@ export function SettingsView({
                 </label>
               </div>
 
-              <div className="text-[11px] text-[var(--ink-muted)]">
-                当前锚点坐标：
-                {settings.viewportOrigin
-                  ? ` (${settings.viewportOrigin.x}, ${settings.viewportOrigin.y}) · 可在编辑模式下拖拽十字标记微调`
-                  : ' 未手动锁定（默认取布局中心）'}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+                <div className="flex items-center justify-between gap-2 rounded-xl bg-[var(--bg-card)] border border-[var(--border-hair)] px-2.5 py-2">
+                  <div className="min-w-0">
+                    <div className="font-medium text-[var(--ink-secondary)]">解锁后锚点</div>
+                    <div className="text-[var(--ink-muted)] truncate">
+                      {settings.viewportOrigin
+                        ? `(${settings.viewportOrigin.x}, ${settings.viewportOrigin.y})`
+                        : '未锁定（默认居中）'}
+                    </div>
+                  </div>
+                  {settings.viewportOrigin && (
+                    <button
+                      type="button"
+                      onClick={() => void commitPatch({ viewportOrigin: null })}
+                      className="shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium bg-[var(--bg-subtle)] border border-[var(--border-hair)] hover:border-[var(--border-strong)] cursor-pointer"
+                    >
+                      重置
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between gap-2 rounded-xl bg-[var(--bg-card)] border border-[var(--border-hair)] px-2.5 py-2">
+                  <div className="min-w-0">
+                    <div className="font-medium text-[var(--ink-secondary)]">解锁前锚点</div>
+                    <div className="text-[var(--ink-muted)] truncate">
+                      {lockedViewportOrigin
+                        ? `(${lockedViewportOrigin.x}, ${lockedViewportOrigin.y})`
+                        : '未锁定（默认居中）'}
+                    </div>
+                  </div>
+                  {lockedViewportOrigin && onResetLockedViewportOrigin && (
+                    <button
+                      type="button"
+                      onClick={onResetLockedViewportOrigin}
+                      className="shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium bg-[var(--bg-subtle)] border border-[var(--border-hair)] hover:border-[var(--border-strong)] cursor-pointer"
+                    >
+                      重置
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
 

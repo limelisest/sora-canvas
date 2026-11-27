@@ -787,8 +787,15 @@ test('v3.1 snapshot 5-minute coalescing, manual snapshot/delete, and viewportOri
     assert.equal(setOriginRes.statusCode, 200);
     assert.deepEqual(setOriginRes.json().settings.viewportOrigin, { x: 142, y: -89 });
 
-    const canvasCheck1 = await isolatedApp.inject({ method: 'GET', url: '/api/canvas' });
+    const canvasCheck1 = await isolatedApp.inject({
+      method: 'GET',
+      url: '/api/canvas',
+      headers: authHeaders,
+    });
     assert.deepEqual(canvasCheck1.json().settings.viewportOrigin, { x: 142, y: -89 });
+
+    const anonOriginCheck = await isolatedApp.inject({ method: 'GET', url: '/api/canvas' });
+    assert.equal(anonOriginCheck.json().settings.viewportOrigin, null);
 
     const clearOriginRes = await isolatedApp.inject({
       method: 'PUT',
@@ -1468,5 +1475,193 @@ test('defaultTheme defaults to system and boot HTML injects data-default-theme +
   } finally {
     await bootApp.close();
     await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('dual layout: separate unlocked/locked coords & viewportOrigin, zero leak when locked, and backup round-trip', async () => {
+  const dirA = await fs.mkdtemp(path.join(os.tmpdir(), 'neko-dual-a-'));
+  const dirB = await fs.mkdtemp(path.join(os.tmpdir(), 'neko-dual-b-'));
+  const appA = await buildApp({ dataDir: dirA, password: 'pwA', serveStatic: false });
+  const appB = await buildApp({ dataDir: dirB, password: 'pwB', serveStatic: false });
+  const now = new Date().toISOString();
+
+  try {
+    const unlockA = await appA.inject({
+      method: 'POST',
+      url: '/api/auth/unlock',
+      payload: { password: 'pwA' },
+    });
+    assert.equal(unlockA.statusCode, 200);
+    const cookieA = unlockA.headers['set-cookie'] as string;
+
+    const unlockB = await appB.inject({
+      method: 'POST',
+      url: '/api/auth/unlock',
+      payload: { password: 'pwB' },
+    });
+    assert.equal(unlockB.statusCode, 200);
+    const cookieB = unlockB.headers['set-cookie'] as string;
+
+    // Set unlocked viewportOrigin on settings
+    const putSettingsRes = await appA.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      headers: { cookie: cookieA },
+      payload: { viewportOrigin: { x: 500, y: 300 } },
+    });
+    assert.equal(putSettingsRes.statusCode, 200);
+
+    // Save dual-layout document: unlocked coords vs independent publicLayout coords + viewportOrigin
+    const putCanvasRes = await appA.inject({
+      method: 'PUT',
+      url: '/api/canvas',
+      headers: { cookie: cookieA },
+      payload: {
+        folders: [
+          {
+            id: 'f-pub-1',
+            title: 'Public Dual',
+            x: 0,
+            y: 0,
+            w: 2,
+            h: 2,
+            displayMode: 'grid',
+            isPrivate: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+          {
+            id: 'f-priv-1',
+            title: 'Private Secret',
+            x: 4,
+            y: 0,
+            w: 2,
+            h: 2,
+            displayMode: 'grid',
+            isPrivate: true,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+        items: [
+          {
+            id: 'i-pub-1',
+            title: 'Public Link',
+            url: 'https://dual.example',
+            parentId: null,
+            x: 2,
+            y: 0,
+            w: 1,
+            h: 1,
+            order: 0,
+            createdAt: now,
+            updatedAt: now,
+          },
+          {
+            id: 'i-priv-1',
+            title: 'Hidden Secret',
+            url: 'https://hidden.example',
+            parentId: 'f-priv-1',
+            x: 0,
+            y: 0,
+            w: 1,
+            h: 1,
+            order: 0,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+        zones: [],
+        widgets: [],
+        publicLayout: {
+          positions: {
+            'f-pub-1': { x: 10, y: 8, w: 3, h: 2 },
+            'i-pub-1': { x: 13.25, y: 8, w: 2, h: 1 },
+          },
+          viewportOrigin: { x: -200, y: 150 },
+        },
+      },
+    });
+    assert.equal(putCanvasRes.statusCode, 200);
+
+    // Authenticated GET returns unlocked canonical positions & unlocked viewportOrigin
+    const authedGet = await appA.inject({
+      method: 'GET',
+      url: '/api/canvas',
+      headers: { cookie: cookieA },
+    });
+    assert.equal(authedGet.statusCode, 200);
+    const authedJson = authedGet.json();
+    assert.equal(authedJson.unlocked, true);
+    assert.deepEqual(authedJson.settings.viewportOrigin, { x: 500, y: 300 });
+    assert.equal(authedJson.folders.find((f: { id: string }) => f.id === 'f-pub-1').x, 0);
+    assert.deepEqual(authedJson.publicLayout.viewportOrigin, { x: -200, y: 150 });
+
+    // Unauthenticated GET applies publicLayout overrides & publicViewportOrigin and strips raw publicLayout + private items
+    const anonGet = await appA.inject({ method: 'GET', url: '/api/canvas' });
+    assert.equal(anonGet.statusCode, 200);
+    const anonJson = anonGet.json();
+    assert.equal(anonJson.unlocked, false);
+    assert.equal(anonJson.hasPrivateHidden, true);
+    assert.equal('publicLayout' in anonJson, false);
+    assert.deepEqual(anonJson.settings.viewportOrigin, { x: -200, y: 150 });
+    assert.equal(anonJson.folders.length, 1);
+    assert.deepEqual(
+      {
+        x: anonJson.folders[0].x,
+        y: anonJson.folders[0].y,
+        w: anonJson.folders[0].w,
+        h: anonJson.folders[0].h,
+      },
+      { x: 10, y: 8, w: 3, h: 2 }
+    );
+    assert.equal(anonJson.items.length, 1);
+    assert.deepEqual(
+      {
+        x: anonJson.items[0].x,
+        y: anonJson.items[0].y,
+        w: anonJson.items[0].w,
+        h: anonJson.items[0].h,
+      },
+      { x: 13.25, y: 8, w: 2, h: 1 }
+    );
+
+    // Backup export -> fresh instance B import restores BOTH layouts and BOTH anchors
+    const exportRes = await appA.inject({
+      method: 'GET',
+      url: '/api/backup/export',
+      headers: { cookie: cookieA },
+    });
+    assert.equal(exportRes.statusCode, 200);
+
+    const importRes = await appB.inject({
+      method: 'POST',
+      url: '/api/backup/import',
+      headers: { cookie: cookieB },
+      payload: exportRes.json(),
+    });
+    assert.equal(importRes.statusCode, 200);
+
+    const anonB = await appB.inject({ method: 'GET', url: '/api/canvas' });
+    assert.equal(anonB.statusCode, 200);
+    const anonBJson = anonB.json();
+    assert.deepEqual(anonBJson.settings.viewportOrigin, { x: -200, y: 150 });
+    assert.equal(anonBJson.folders[0].x, 10);
+    assert.equal(anonBJson.items[0].x, 13.25);
+
+    const authedB = await appB.inject({
+      method: 'GET',
+      url: '/api/canvas',
+      headers: { cookie: cookieB },
+    });
+    assert.equal(authedB.statusCode, 200);
+    const authedBJson = authedB.json();
+    assert.deepEqual(authedBJson.settings.viewportOrigin, { x: 500, y: 300 });
+    assert.equal(authedBJson.folders.find((f: { id: string }) => f.id === 'f-pub-1').x, 0);
+  } finally {
+    await appA.close();
+    await appB.close();
+    await fs.rm(dirA, { recursive: true, force: true });
+    await fs.rm(dirB, { recursive: true, force: true });
   }
 });

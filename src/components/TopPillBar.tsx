@@ -12,7 +12,7 @@ import {
   Unlock,
 } from 'lucide-react';
 import type { SiteSettings } from '../../shared/types';
-import type { ThemeMode } from '../App';
+import type { EditLayoutTarget, ThemeMode } from '../App';
 import { SHORTCUT_SEARCH } from '../utils/platform';
 
 export type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
@@ -25,6 +25,8 @@ interface TopPillBarProps {
   onLockToggle: () => void;
   editMode: boolean;
   onToggleEditMode: () => void;
+  layoutTarget?: EditLayoutTarget;
+  onSwitchToUnlockedLayout?: () => void;
   saveStatus?: SaveStatus;
   finishingEdit?: boolean;
   onOpenSettings: () => void;
@@ -44,6 +46,8 @@ export function TopPillBar({
   onLockToggle,
   editMode,
   onToggleEditMode,
+  layoutTarget = 'unlocked',
+  onSwitchToUnlockedLayout,
   saveStatus = 'idle',
   finishingEdit = false,
   onOpenSettings,
@@ -56,15 +60,28 @@ export function TopPillBar({
 }: TopPillBarProps) {
   return (
     <header className="pointer-events-none fixed top-4 left-4 right-4 z-30 flex flex-wrap items-center justify-between gap-2">
-      {/* Left Pill: Brand Title */}
-      <div className="pointer-events-auto pill-surface flex items-center gap-1.5 px-3.5 py-1.5 text-sm">
-        <span className="flex items-center gap-2 font-semibold tracking-tight">
-          <span
-            className="inline-block h-2.5 w-2.5 rounded-full"
-            style={{ backgroundColor: 'var(--accent-orange)' }}
-          />
-          <span>{settings.siteTitle}</span>
-        </span>
+      {/* Left Pill: Brand Title + Locked-Layout Editing Badge */}
+      <div className="pointer-events-auto flex flex-wrap items-center gap-2">
+        <div className="pill-surface flex items-center gap-1.5 px-3.5 py-1.5 text-sm">
+          <span className="flex items-center gap-2 font-semibold tracking-tight">
+            <span
+              className="inline-block h-2.5 w-2.5 rounded-full"
+              style={{ backgroundColor: 'var(--accent-orange)' }}
+            />
+            <span>{settings.siteTitle}</span>
+          </span>
+        </div>
+        {editMode && layoutTarget === 'locked' && (
+          <button
+            type="button"
+            onClick={onSwitchToUnlockedLayout}
+            className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium bg-amber-500/18 text-amber-700 dark:text-amber-300 border border-amber-500/35 backdrop-blur-md shadow-sm hover:bg-amber-500/26 transition-colors cursor-pointer"
+            title="当前正在编辑「解锁前」访客看到的布局，点击切回「解锁后」布局"
+          >
+            <Lock size={12} />
+            <span>解锁前布局编辑中</span>
+          </button>
+        )}
       </div>
 
       {/* Right Pill: Save Status + Search + Lock/Unlock + Edit + Unlocked-Only Settings + Theme */}
