@@ -7,7 +7,7 @@ import type { FastifyInstance } from 'fastify';
 import sharp from 'sharp';
 import { buildApp } from '../server/app.js';
 import { normalizeDocument, pruneOrphanedUploads } from '../server/store.js';
-import { normalizeSiteSettings } from '../shared/settings.js';
+import { DEFAULT_SITE_SETTINGS, normalizeSiteSettings } from '../shared/settings.js';
 
 let tmpDir: string;
 let app: FastifyInstance;
@@ -1429,5 +1429,44 @@ test('backup export bundles referenced uploads and import restores exact bytes t
     await appB.close();
     await fs.rm(dirA, { recursive: true, force: true });
     await fs.rm(dirB, { recursive: true, force: true });
+  }
+});
+
+test('defaultTheme defaults to system and boot HTML injects data-default-theme + auto anti-flash script', async () => {
+  assert.equal(DEFAULT_SITE_SETTINGS.defaultTheme, 'system');
+
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'neko-boot-theme-'));
+  const bootApp = await buildApp({ dataDir: dir, password: 'pw', serveStatic: true });
+  try {
+    const res = await bootApp.inject({ method: 'GET', url: '/' });
+    assert.equal(res.statusCode, 200);
+    const html = res.body;
+    assert.ok(html.includes('data-default-theme="system"'));
+    assert.ok(html.includes("getAttribute('data-default-theme')"));
+    assert.ok(html.includes("t === 'auto'"));
+    assert.ok(html.includes('(prefers-color-scheme: dark)'));
+
+    const unlockRes = await bootApp.inject({
+      method: 'POST',
+      url: '/api/auth/unlock',
+      payload: { password: 'pw' },
+    });
+    assert.equal(unlockRes.statusCode, 200);
+    const cookie = unlockRes.headers['set-cookie'] as string;
+
+    const putSettings = await bootApp.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      headers: { cookie },
+      payload: { defaultTheme: 'dark' },
+    });
+    assert.equal(putSettings.statusCode, 200);
+
+    const resDark = await bootApp.inject({ method: 'GET', url: '/' });
+    assert.equal(resDark.statusCode, 200);
+    assert.ok(resDark.body.includes('data-default-theme="dark"'));
+  } finally {
+    await bootApp.close();
+    await fs.rm(dir, { recursive: true, force: true });
   }
 });

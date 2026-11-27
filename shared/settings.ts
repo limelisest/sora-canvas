@@ -13,7 +13,7 @@ export const DEFAULT_SITE_SETTINGS: SiteSettings = {
   homeLinkEnabled: false,
   homeLinkLabel: 'home',
   homeLinkUrl: 'https://example.com',
-  defaultTheme: 'light',
+  defaultTheme: 'system',
   dotGridMode: 'always',
   canvasBgStyle: 'aurora',
   customBgUrl: '',

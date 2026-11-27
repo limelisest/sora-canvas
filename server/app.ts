@@ -707,6 +707,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
         const safeJson = JSON.stringify(bootPayload).replace(/</g, '\\u003c');
         const html = indexHtmlTemplate
+          .replace('<html ', `<html data-default-theme="${settings.defaultTheme}" `)
           .replace(/<title>[^<]*<\/title>/, `<title>${escapeHtmlTitle(settings.siteTitle)}</title>`)
           .replace(
             '</head>',

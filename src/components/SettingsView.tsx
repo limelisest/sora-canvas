@@ -23,6 +23,7 @@ import {
   Sliders,
   Sparkles,
   Sun,
+  SunMoon,
   Trash2,
   Unlock,
   Upload,
@@ -34,6 +35,7 @@ import type {
   RememberDays,
   SiteSettings,
 } from '../../shared/types';
+import type { ThemeMode } from '../App';
 import {
   changePasswordApi,
   createManualHistoryApi,
@@ -68,7 +70,9 @@ interface SettingsViewProps {
   settings: SiteSettings;
   doc: CanvasDocument;
   dark: boolean;
+  themeMode: ThemeMode;
   onToggleDark: () => void;
+  onSetAutoTheme: () => void;
   onBack: () => void;
   onLock: () => void;
   onUpdateSettings: (patch: Partial<SiteSettings>) => Promise<void>;
@@ -82,7 +86,9 @@ export function SettingsView({
   settings,
   doc,
   dark,
+  themeMode,
   onToggleDark,
+  onSetAutoTheme,
   onBack,
   onLock,
   onUpdateSettings,
@@ -337,14 +343,39 @@ export function SettingsView({
               <Unlock size={13} />
               <span>上锁</span>
             </button>
-            <button
-              type="button"
-              onClick={onToggleDark}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] cursor-pointer"
-              aria-label="切换深浅色主题"
-            >
-              {dark ? <Sun size={14} /> : <Moon size={14} />}
-            </button>
+            {themeMode === 'auto' ? (
+              <button
+                type="button"
+                onClick={onToggleDark}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] cursor-pointer"
+                aria-label={`主题：自动跟随系统（当前${dark ? '深色' : '浅色'}），点击切换为手动`}
+                title={`主题：自动跟随系统（当前${dark ? '深色' : '浅色'}），点击切换为手动`}
+              >
+                <SunMoon size={14} />
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={onToggleDark}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] cursor-pointer"
+                  aria-label="切换深浅色主题"
+                  title={dark ? '手动深色（点击切为浅色）' : '手动浅色（点击切为深色）'}
+                >
+                  {dark ? <Sun size={14} /> : <Moon size={14} />}
+                </button>
+                <button
+                  type="button"
+                  onClick={onSetAutoTheme}
+                  className="inline-flex h-7 items-center gap-1 rounded-full px-2 text-[11px] font-medium bg-[var(--bg-subtle)]/80 hover:bg-[var(--bg-subtle)] border border-[var(--border-hair)] text-[var(--ink-secondary)] hover:text-[var(--ink-main)] transition-colors cursor-pointer"
+                  aria-label="切换自动深浅色主题"
+                  title="恢复自动跟随系统主题"
+                >
+                  <SunMoon size={12} />
+                  <span>自动</span>
+                </button>
+              </>
+            )}
           </div>
         </div>
       </header>
@@ -426,9 +457,9 @@ export function SettingsView({
                   }
                   className="bento-input w-full px-2.5 py-2 text-xs"
                 >
+                  <option value="system">自动跟随系统（默认）</option>
                   <option value="light">暖石浅色</option>
                   <option value="dark">深邃暗黑</option>
-                  <option value="system">跟随系统</option>
                 </select>
               </div>
               <div>

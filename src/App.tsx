@@ -82,6 +82,13 @@ const ContextMenu = lazy(() =>
 );
 
 const THEME_STORAGE_KEY = 'neko-like-theme';
+export type ThemeMode = 'auto' | 'light' | 'dark';
+
+function defaultThemeToMode(mode: DefaultThemeMode): ThemeMode {
+  if (mode === 'dark') return 'dark';
+  if (mode === 'light') return 'light';
+  return 'auto';
+}
 
 function readBootPayload(): CanvasResponse | null {
   try {
@@ -99,14 +106,6 @@ function readBootPayload(): CanvasResponse | null {
 }
 
 const INITIAL_BOOT = typeof document !== 'undefined' ? readBootPayload() : null;
-
-function resolveDefaultThemeDark(mode: DefaultThemeMode): boolean {
-  if (mode === 'dark') return true;
-  if (mode === 'system') {
-    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
-  }
-  return false;
-}
 
 export default function App() {
   const [doc, setDoc] = useState<CanvasDocument>(() =>
@@ -166,14 +165,24 @@ export default function App() {
   const didInitialCenterRef = useRef(Boolean(INITIAL_BOOT));
   const canvasRef = useRef<InfiniteCanvasHandle>(null);
 
-  const [dark, setDark] = useState(() => {
-    const stored = localStorage.getItem(THEME_STORAGE_KEY);
-    if (stored !== null) return stored === 'dark';
-    if (INITIAL_BOOT?.settings) {
-      return resolveDefaultThemeDark(INITIAL_BOOT.settings.defaultTheme);
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
+    try {
+      const stored = localStorage.getItem(THEME_STORAGE_KEY);
+      if (stored === 'auto' || stored === 'light' || stored === 'dark') {
+        return stored;
+      }
+    } catch {
+      // ignore
     }
-    return false;
+    if (INITIAL_BOOT?.settings) {
+      return defaultThemeToMode(INITIAL_BOOT.settings.defaultTheme);
+    }
+    return 'auto';
   });
+  const [systemDark, setSystemDark] = useState<boolean>(
+    () => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
+  );
+  const dark = themeMode === 'auto' ? systemDark : themeMode === 'dark';
 
   const [undoStack, setUndoStack] = useState<
     Array<{
@@ -230,6 +239,19 @@ export default function App() {
   );
 
   useEffect(() => {
+    const mq = window.matchMedia?.('(prefers-color-scheme: dark)');
+    if (!mq) return;
+    setSystemDark(mq.matches);
+    const onChange = (e: MediaQueryListEvent) => setSystemDark(e.matches);
+    if (typeof mq.addEventListener === 'function') {
+      mq.addEventListener('change', onChange);
+      return () => mq.removeEventListener('change', onChange);
+    }
+    mq.addListener(onChange);
+    return () => mq.removeListener(onChange);
+  }, []);
+
+  useEffect(() => {
     document.documentElement.classList.toggle('dark', dark);
   }, [dark]);
 
@@ -251,11 +273,22 @@ export default function App() {
   }, [settings.siteTitle, settings.brandAccent]);
 
   const toggleDark = useCallback(() => {
-    setDark((prev) => {
-      const next = !prev;
-      localStorage.setItem(THEME_STORAGE_KEY, next ? 'dark' : 'light');
-      return next;
-    });
+    const nextMode: ThemeMode = dark ? 'light' : 'dark';
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, nextMode);
+    } catch {
+      // ignore
+    }
+    setThemeMode(nextMode);
+  }, [dark]);
+
+  const setAutoTheme = useCallback(() => {
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, 'auto');
+    } catch {
+      // ignore
+    }
+    setThemeMode('auto');
   }, []);
 
   const refreshCanvas = useCallback(
@@ -278,8 +311,12 @@ export default function App() {
         setHasPrivateHidden(res.hasPrivateHidden);
         if (res.settings) {
           setSettings(res.settings);
-          if (localStorage.getItem(THEME_STORAGE_KEY) === null) {
-            setDark(resolveDefaultThemeDark(res.settings.defaultTheme));
+          try {
+            if (localStorage.getItem(THEME_STORAGE_KEY) === null) {
+              setThemeMode(defaultThemeToMode(res.settings.defaultTheme));
+            }
+          } catch {
+            // ignore
           }
         }
         if (!res.unlocked) {
@@ -947,8 +984,12 @@ export default function App() {
       docRef.current = nextDoc;
       setDoc(nextDoc);
       if (patch.defaultTheme) {
-        localStorage.removeItem(THEME_STORAGE_KEY);
-        setDark(resolveDefaultThemeDark(res.settings.defaultTheme));
+        try {
+          localStorage.removeItem(THEME_STORAGE_KEY);
+        } catch {
+          // ignore
+        }
+        setThemeMode(defaultThemeToMode(res.settings.defaultTheme));
       }
       if (
         patch.desktopViewportMode !== undefined ||
@@ -2322,7 +2363,9 @@ export default function App() {
             settings={settings}
             doc={doc}
             dark={dark}
+            themeMode={themeMode}
             onToggleDark={toggleDark}
+            onSetAutoTheme={setAutoTheme}
             onBack={() => setSettingsOpen(false)}
             onLock={() => void handleLockToggle()}
             onUpdateSettings={handleUpdateSettings}
@@ -2346,7 +2389,9 @@ export default function App() {
               unlocked={unlocked}
               hasPrivateHidden={hasPrivateHidden}
               dark={dark}
+              themeMode={themeMode}
               onToggleDark={toggleDark}
+              onSetAutoTheme={setAutoTheme}
               onLockToggle={() => void handleLockToggle()}
               onRequestUnlock={(reason) =>
                 setUnlockModal({
@@ -2378,7 +2423,9 @@ export default function App() {
                 finishingEdit={finishingEdit}
                 onOpenSettings={() => setSettingsOpen(true)}
                 dark={dark}
+                themeMode={themeMode}
                 onToggleDark={toggleDark}
+                onSetAutoTheme={setAutoTheme}
                 showSwitchToPaged={isMobile && activeMobileView === 'canvas'}
                 onSwitchToPaged={() => handleSwitchMobileView('paged')}
               />

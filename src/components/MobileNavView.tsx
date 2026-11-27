@@ -25,12 +25,14 @@ import {
   SlidersHorizontal,
   StickyNote,
   Sun,
+  SunMoon,
   Trash2,
   Unlock,
   X,
 } from 'lucide-react';
 import type { BookmarkItem, FolderContainer, NoteWidget, SiteSettings } from '../../shared/types';
 import { fuzzyScore } from '../../shared/pinyin';
+import type { ThemeMode } from '../App';
 import { useStagedWallpaper } from '../utils/loadTracker';
 import { IconGlyph } from './IconGlyph';
 
@@ -55,7 +57,9 @@ interface MobileNavViewProps {
   unlocked: boolean;
   hasPrivateHidden: boolean;
   dark: boolean;
+  themeMode: ThemeMode;
   onToggleDark: () => void;
+  onSetAutoTheme: () => void;
   onLockToggle: () => void;
   onRequestUnlock: (reason?: string) => void;
   onSwitchToCanvas: () => void;
@@ -107,7 +111,9 @@ export function MobileNavView({
   unlocked,
   hasPrivateHidden,
   dark,
+  themeMode,
   onToggleDark,
+  onSetAutoTheme,
   onLockToggle,
   onRequestUnlock,
   onSwitchToCanvas,
@@ -1152,15 +1158,41 @@ export function MobileNavView({
               {layoutMode === 'grid' ? <List size={15} /> : <LayoutGrid size={15} />}
             </button>
 
-            <button
-              type="button"
-              onClick={onToggleDark}
-              className="h-9 w-9 rounded-full flex items-center justify-center text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] transition-colors cursor-pointer active:scale-95"
-              aria-label="切换深浅色主题"
-              title="切换深浅色主题"
-            >
-              {dark ? <Sun size={15} /> : <Moon size={15} />}
-            </button>
+            {themeMode === 'auto' ? (
+              <button
+                type="button"
+                onClick={onToggleDark}
+                className="h-9 w-9 rounded-full flex items-center justify-center text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] transition-colors cursor-pointer active:scale-95"
+                aria-label={`主题：自动跟随系统（当前${dark ? '深色' : '浅色'}），点击切换为手动`}
+                title={`主题：自动跟随系统（当前${dark ? '深色' : '浅色'}），点击切换为手动`}
+              >
+                <SunMoon size={15} />
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={onToggleDark}
+                  className="h-9 w-9 rounded-full flex items-center justify-center text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] transition-colors cursor-pointer active:scale-95"
+                  aria-label="切换深浅色主题"
+                  title={dark ? '手动深色（点击切为浅色）' : '手动浅色（点击切为深色）'}
+                >
+                  {dark ? <Sun size={15} /> : <Moon size={15} />}
+                </button>
+                <button
+                  type="button"
+                  onClick={onSetAutoTheme}
+                  className="relative h-9 w-9 rounded-full flex items-center justify-center text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] transition-colors cursor-pointer active:scale-95"
+                  aria-label="切换自动深浅色主题"
+                  title="恢复自动跟随系统主题"
+                >
+                  <SunMoon size={15} />
+                  <span className="absolute bottom-1 right-1 text-[8px] font-bold leading-none text-[var(--accent-orange)]">
+                    A
+                  </span>
+                </button>
+              </>
+            )}
 
             <button
               type="button"

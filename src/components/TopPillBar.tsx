@@ -8,9 +8,11 @@ import {
   Search,
   Settings,
   Sun,
+  SunMoon,
   Unlock,
 } from 'lucide-react';
 import type { SiteSettings } from '../../shared/types';
+import type { ThemeMode } from '../App';
 import { SHORTCUT_SEARCH } from '../utils/platform';
 
 export type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
@@ -27,7 +29,9 @@ interface TopPillBarProps {
   finishingEdit?: boolean;
   onOpenSettings: () => void;
   dark: boolean;
+  themeMode: ThemeMode;
   onToggleDark: () => void;
+  onSetAutoTheme: () => void;
   showSwitchToPaged?: boolean;
   onSwitchToPaged?: () => void;
 }
@@ -44,7 +48,9 @@ export function TopPillBar({
   finishingEdit = false,
   onOpenSettings,
   dark,
+  themeMode,
   onToggleDark,
+  onSetAutoTheme,
   showSwitchToPaged = false,
   onSwitchToPaged,
 }: TopPillBarProps) {
@@ -161,15 +167,39 @@ export function TopPillBar({
           </button>
         )}
 
-        <button
-          type="button"
-          onClick={onToggleDark}
-          className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] transition-colors cursor-pointer"
-          aria-label="切换深浅色主题"
-          title="切换深浅色主题"
-        >
-          {dark ? <Sun size={14} /> : <Moon size={14} />}
-        </button>
+        {themeMode === 'auto' ? (
+          <button
+            type="button"
+            onClick={onToggleDark}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] transition-colors cursor-pointer"
+            aria-label={`主题：自动跟随系统（当前${dark ? '深色' : '浅色'}），点击切换为手动`}
+            title={`主题：自动跟随系统（当前${dark ? '深色' : '浅色'}），点击切换为手动`}
+          >
+            <SunMoon size={14} />
+          </button>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={onToggleDark}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] transition-colors cursor-pointer"
+              aria-label="切换深浅色主题"
+              title={dark ? '手动深色（点击切为浅色）' : '手动浅色（点击切为深色）'}
+            >
+              {dark ? <Sun size={14} /> : <Moon size={14} />}
+            </button>
+            <button
+              type="button"
+              onClick={onSetAutoTheme}
+              className="inline-flex h-7 items-center gap-1 rounded-full px-2 text-[11px] font-medium bg-[var(--bg-subtle)]/80 hover:bg-[var(--bg-subtle)] border border-[var(--border-hair)] text-[var(--ink-secondary)] hover:text-[var(--ink-main)] transition-colors cursor-pointer"
+              aria-label="切换自动深浅色主题"
+              title="恢复自动跟随系统主题"
+            >
+              <SunMoon size={12} />
+              <span>自动</span>
+            </button>
+          </>
+        )}
       </div>
     </header>
   );

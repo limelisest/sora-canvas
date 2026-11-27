@@ -7,7 +7,15 @@
     <script>
       try {
         var t = localStorage.getItem('neko-like-theme');
-        if (t === 'dark') document.documentElement.classList.add('dark');
+        var dt = document.documentElement.getAttribute('data-default-theme') || 'system';
+        var useAuto = t === 'auto' || (!t && dt === 'system');
+        if (
+          t === 'dark' ||
+          (useAuto && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ||
+          (!t && dt === 'dark')
+        ) {
+          document.documentElement.classList.add('dark');
+        }
       } catch (e) {}
     </script>
     <link rel="help" type="text/markdown" href="/llms.txt" title="AI Agent API Guide" />
