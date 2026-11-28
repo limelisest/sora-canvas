@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
@@ -438,8 +439,12 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
     }>({ targetId: null, anchorX: 0, anchorY: 0, timerId: null });
 
     const step = grid.cellSize + grid.gap;
+    const showDotGrid =
+      settings.dotGridMode === 'always' ||
+      (settings.dotGridMode === 'edit-only' && editMode);
     const viewRef = useRef({ scale, panX, panY });
-    viewRef.current = { scale, panX, panY };
+    const lastSyncedPropViewRef = useRef({ scale, panX, panY });
+    const didMountDomRef = useRef(false);
 
     const applyViewportDom = useCallback(
       (next: { scale: number; panX: number; panY: number }, active = true) => {
@@ -468,6 +473,35 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
       [step]
     );
 
+    useLayoutEffect(() => {
+      if (!didMountDomRef.current) {
+        didMountDomRef.current = true;
+        lastSyncedPropViewRef.current = { scale, panX, panY };
+        viewRef.current = { scale, panX, panY };
+        applyViewportDom(viewRef.current, false);
+        return;
+      }
+      const last = lastSyncedPropViewRef.current;
+      if (scale !== last.scale || panX !== last.panX || panY !== last.panY) {
+        lastSyncedPropViewRef.current = { scale, panX, panY };
+        const gesturing =
+          panRef.current.active ||
+          Boolean(pinchRef.current?.active) ||
+          wheelSyncTimerRef.current !== null;
+        if (!gesturing || flyTransition) {
+          viewRef.current = { scale, panX, panY };
+          applyViewportDom(viewRef.current, false);
+        }
+      }
+    }, [scale, panX, panY, flyTransition, applyViewportDom]);
+
+    useLayoutEffect(() => {
+      if (showDotGrid) {
+        lastDotStepRef.current = 0;
+        applyViewportDom(viewRef.current, false);
+      }
+    }, [showDotGrid, applyViewportDom]);
+
     const scheduleDomViewportUpdate = useCallback(() => {
       if (rafViewportRef.current !== null) return;
       rafViewportRef.current = window.requestAnimationFrame(() => {
@@ -489,6 +523,7 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
             panY: Math.round(viewRef.current.panY),
           };
           viewRef.current = settled;
+          lastSyncedPropViewRef.current = settled;
           applyViewportDom(settled, false);
           onViewportChange(settled);
         }, delayMs);
@@ -1872,6 +1907,7 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
           panY: Math.round(viewRef.current.panY),
         };
         viewRef.current = settled;
+        lastSyncedPropViewRef.current = settled;
         applyViewportDom(settled, false);
         onViewportChange(settled);
       }
@@ -2430,7 +2466,6 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
 
     const activeErrorMsg =
       resizeState?.errorMsg ?? dragState?.errorMsg ?? childDrag?.errorMsg ?? zoneDrag?.errorMsg ?? null;
-    const dotStep = Math.max(14, (step / 4) * scale);
 
     // Snap alignment guides (1 vertical + 1 horizontal within < 1 world px during active drag)
     const alignGuides = (() => {
@@ -2600,9 +2635,6 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
       (childDropW * grid.cellSize + (childDropW - 1) * grid.gap) * scale;
     const ghostHeight =
       (childDropH * grid.cellSize + (childDropH - 1) * grid.gap) * scale;
-    const showDotGrid =
-      settings.dotGridMode === 'always' ||
-      (settings.dotGridMode === 'edit-only' && editMode);
     const useWallpaper =
       settings.canvasBgStyle === 'wallpaper' && Boolean(settings.customBgUrl);
     const wallpaperReady = useStagedWallpaper(useWallpaper, settings.customBgUrl);
@@ -2665,8 +2697,6 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
               inset: -96,
               willChange: 'transform',
               backgroundImage: `radial-gradient(var(--dot-color) 1.25px, transparent 1.25px)`,
-              backgroundSize: `${dotStep}px ${dotStep}px`,
-              transform: `translate3d(${((panX % dotStep) + dotStep) % dotStep}px, ${((panY % dotStep) + dotStep) % dotStep}px, 0)`,
             }}
           />
         )}
@@ -2675,7 +2705,6 @@ export const InfiniteCanvas = forwardRef<InfiniteCanvasHandle, InfiniteCanvasPro
         <div
           ref={worldLayerRef}
           style={{
-            transform: `translate(${Math.round(panX)}px, ${Math.round(panY)}px) scale(${scale})`,
             transformOrigin: '0 0',
             transition: flyTransition
               ? 'transform 320ms cubic-bezier(0.22, 1, 0.36, 1)'

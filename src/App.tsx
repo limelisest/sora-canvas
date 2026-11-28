@@ -47,6 +47,7 @@ import { InfiniteCanvas, type InfiniteCanvasHandle } from './components/Infinite
 import { ZoomControlPill } from './components/ZoomControlPill';
 import {
   computeInitialView,
+  getContentBoundsWorld,
   isMobileViewport,
   MAX_VIEW_SCALE,
   MIN_VIEW_SCALE,
@@ -189,6 +190,8 @@ export default function App() {
       : { scale: 1, panX: 400, panY: 300 }
   );
   const didInitialCenterRef = useRef(Boolean(INITIAL_BOOT));
+  const viewStateRef = useRef(view);
+  viewStateRef.current = view;
   const canvasRef = useRef<InfiniteCanvasHandle>(null);
 
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
@@ -410,15 +413,21 @@ export default function App() {
         const saved = await saveCanvasCompactApi(job.doc);
         // Only update metadata if no newer local mutation happened while request was in flight
         if (job.rev === commitRevRef.current && !pendingSaveRef.current) {
-          setDoc((cur) => {
+          const cur = docRef.current;
+          if (saved.grid.cellSize !== cur.grid.cellSize || saved.grid.gap !== cur.grid.gap) {
             const next = {
               ...cur,
               updatedAt: saved.updatedAt,
               grid: saved.grid,
             };
             docRef.current = next;
-            return next;
-          });
+            setDoc(next);
+          } else {
+            docRef.current = {
+              ...cur,
+              updatedAt: saved.updatedAt,
+            };
+          }
           if (savedBadgeTimerRef.current !== null) {
             window.clearTimeout(savedBadgeTimerRef.current);
           }
@@ -1181,12 +1190,19 @@ export default function App() {
     async (patch: Partial<SiteSettings>) => {
       const res = await saveSettingsApi(patch);
       setSettings(res.settings);
-      const nextDoc: CanvasDocument = {
-        ...doc,
-        grid: res.grid,
-      };
-      docRef.current = nextDoc;
-      setDoc(nextDoc);
+      const curDoc = docRef.current;
+      const gridChanged =
+        res.grid.cellSize !== curDoc.grid.cellSize || res.grid.gap !== curDoc.grid.gap;
+      const nextDoc: CanvasDocument = gridChanged
+        ? {
+            ...curDoc,
+            grid: res.grid,
+          }
+        : curDoc;
+      if (gridChanged) {
+        docRef.current = nextDoc;
+        setDoc(nextDoc);
+      }
       if (patch.defaultTheme) {
         try {
           localStorage.removeItem(THEME_STORAGE_KEY);
@@ -1206,7 +1222,7 @@ export default function App() {
         setMobileViewOverride(null);
       }
     },
-    [doc]
+    []
   );
 
   const resolvedOrigin = useMemo(
@@ -1294,6 +1310,26 @@ export default function App() {
     }, 360);
   }, []);
 
+  const isDocVisibleInCurrentView = useCallback(
+    (targetDoc: CanvasDocument, curView: { scale: number; panX: number; panY: number }) => {
+      const bounds = getContentBoundsWorld(targetDoc);
+      if (!bounds) return true;
+      const vw = typeof window !== 'undefined' ? window.innerWidth : 1440;
+      const vh = typeof window !== 'undefined' ? window.innerHeight : 900;
+      const screenMinX = -curView.panX / curView.scale;
+      const screenMinY = -curView.panY / curView.scale;
+      const screenMaxX = (vw - curView.panX) / curView.scale;
+      const screenMaxY = (vh - curView.panY) / curView.scale;
+      return (
+        bounds.maxX > screenMinX &&
+        bounds.minX < screenMaxX &&
+        bounds.maxY > screenMinY &&
+        bounds.minY < screenMaxY
+      );
+    },
+    []
+  );
+
   const handleSwitchLayoutTarget = useCallback(
     (nextTarget: EditLayoutTarget) => {
       if (nextTarget === layoutTarget) return;
@@ -1302,18 +1338,20 @@ export default function App() {
       setLayoutTarget(nextTarget);
       const curDoc = docRef.current;
       const targetDoc = nextTarget === 'locked' ? projectPublicCanvas(curDoc).doc : curDoc;
-      const targetOrigin =
-        nextTarget === 'locked'
-          ? (curDoc.publicLayout?.viewportOrigin ?? null)
-          : settings.viewportOrigin;
-      flyToViewState(
-        computeInitialView(targetDoc, {
-          ...settings,
-          viewportOrigin: targetOrigin,
-        })
-      );
+      if (!isDocVisibleInCurrentView(targetDoc, viewStateRef.current)) {
+        const targetOrigin =
+          nextTarget === 'locked'
+            ? (curDoc.publicLayout?.viewportOrigin ?? null)
+            : settings.viewportOrigin;
+        flyToViewState(
+          computeInitialView(targetDoc, {
+            ...settings,
+            viewportOrigin: targetOrigin,
+          })
+        );
+      }
     },
-    [layoutTarget, settings, flyToViewState]
+    [layoutTarget, settings, flyToViewState, isDocVisibleInCurrentView]
   );
 
   const handleSyncUnlockedToLocked = useCallback(() => {
@@ -1358,7 +1396,7 @@ export default function App() {
       setMarqueeMode(false);
       setInlineEditingId(null);
       setSelectedIds([]);
-      if (wasLockedTarget) {
+      if (wasLockedTarget && !isDocVisibleInCurrentView(docRef.current, viewStateRef.current)) {
         flyToViewState(computeInitialView(docRef.current, settings));
       }
       if (sessionDirtyRef.current) {
