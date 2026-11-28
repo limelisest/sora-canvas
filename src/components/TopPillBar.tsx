@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import {
   Check,
   LayoutList,
@@ -5,6 +6,8 @@ import {
   Lock,
   Moon,
   Pencil,
+  RotateCcw,
+  Save,
   Search,
   Settings,
   Sun,
@@ -25,6 +28,9 @@ interface TopPillBarProps {
   onLockToggle: () => void;
   editMode: boolean;
   onToggleEditMode: () => void;
+  hasUnsavedChanges?: boolean;
+  onManualSave?: () => void;
+  onDiscardEdit?: () => void;
   layoutTarget?: EditLayoutTarget;
   onSwitchToUnlockedLayout?: () => void;
   saveStatus?: SaveStatus;
@@ -46,6 +52,9 @@ export function TopPillBar({
   onLockToggle,
   editMode,
   onToggleEditMode,
+  hasUnsavedChanges = false,
+  onManualSave,
+  onDiscardEdit,
   layoutTarget = 'unlocked',
   onSwitchToUnlockedLayout,
   saveStatus = 'idle',
@@ -58,6 +67,51 @@ export function TopPillBar({
   showSwitchToPaged = false,
   onSwitchToPaged,
 }: TopPillBarProps) {
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const discardTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!editMode || !hasUnsavedChanges) {
+      setConfirmDiscard(false);
+      if (discardTimerRef.current !== null) {
+        window.clearTimeout(discardTimerRef.current);
+        discardTimerRef.current = null;
+      }
+    }
+  }, [editMode, hasUnsavedChanges]);
+
+  useEffect(() => {
+    return () => {
+      if (discardTimerRef.current !== null) {
+        window.clearTimeout(discardTimerRef.current);
+      }
+    };
+  }, []);
+
+  const handleDiscardClick = () => {
+    if (!hasUnsavedChanges) {
+      onDiscardEdit?.();
+      return;
+    }
+    if (!confirmDiscard) {
+      setConfirmDiscard(true);
+      if (discardTimerRef.current !== null) {
+        window.clearTimeout(discardTimerRef.current);
+      }
+      discardTimerRef.current = window.setTimeout(() => {
+        discardTimerRef.current = null;
+        setConfirmDiscard(false);
+      }, 3000);
+      return;
+    }
+    if (discardTimerRef.current !== null) {
+      window.clearTimeout(discardTimerRef.current);
+      discardTimerRef.current = null;
+    }
+    setConfirmDiscard(false);
+    onDiscardEdit?.();
+  };
+
   return (
     <header className="pointer-events-none fixed top-4 left-4 right-4 z-30 flex flex-wrap items-center justify-between gap-2">
       {/* Left Pill: Brand Title + Locked-Layout Editing Badge */}
@@ -86,13 +140,13 @@ export function TopPillBar({
 
       {/* Right Pill: Save Status + Search + Lock/Unlock + Edit + Unlocked-Only Settings + Theme */}
       <div className="pointer-events-auto pill-surface flex items-center gap-1.5 px-2.5 py-1.5 text-sm">
-        {saveStatus === 'saving' && !finishingEdit && (
+        {!editMode && saveStatus === 'saving' && !finishingEdit && (
           <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium bg-amber-500/12 text-amber-600 dark:text-amber-400">
             <Loader2 size={11} className="animate-spin" />
             <span>保存中...</span>
           </span>
         )}
-        {saveStatus === 'saved' && (
+        {saveStatus === 'saved' && !hasUnsavedChanges && (
           <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium bg-emerald-500/12 text-emerald-600 dark:text-emerald-400">
             <Check size={11} />
             <span>已保存</span>
@@ -129,6 +183,46 @@ export function TopPillBar({
           {unlocked ? <Unlock size={13} /> : <Lock size={13} />}
           <span>{unlocked ? '上锁' : hasPrivateHidden ? '解锁私密' : '解锁'}</span>
         </button>
+
+        {editMode && onDiscardEdit && (
+          <button
+            type="button"
+            disabled={finishingEdit}
+            onClick={handleDiscardClick}
+            className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer disabled:opacity-50 ${
+              confirmDiscard
+                ? 'border border-[var(--accent-red)] bg-red-500/12 text-[var(--accent-red)]'
+                : 'text-[var(--ink-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)]'
+            }`}
+            title={
+              confirmDiscard
+                ? '再次点击确认放弃自进入编辑以来未保存的所有改动'
+                : hasUnsavedChanges
+                  ? '放弃未保存的修改并退出编辑模式'
+                  : '退出编辑模式'
+            }
+          >
+            <RotateCcw size={12} />
+            <span>{confirmDiscard ? '确认放弃？' : '放弃'}</span>
+          </button>
+        )}
+
+        {editMode && onManualSave && (
+          <button
+            type="button"
+            disabled={!hasUnsavedChanges || finishingEdit}
+            onClick={onManualSave}
+            className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
+              hasUnsavedChanges
+                ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/35 hover:bg-emerald-500/24 cursor-pointer'
+                : 'text-[var(--ink-muted)] opacity-50 cursor-default'
+            }`}
+            title="保存当前布局并留在编辑模式 (Ctrl/Cmd+S)"
+          >
+            <Save size={12} />
+            <span>保存</span>
+          </button>
+        )}
 
         <button
           type="button"

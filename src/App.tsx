@@ -152,6 +152,12 @@ export default function App() {
     Boolean(INITIAL_BOOT?.hasPrivateHidden)
   );
   const [editMode, setEditMode] = useState(false);
+  const editModeRef = useRef(false);
+  editModeRef.current = editMode;
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const hasUnsavedRef = useRef(false);
+  hasUnsavedRef.current = hasUnsavedChanges;
+  const editBaselineDocRef = useRef<CanvasDocument | null>(null);
   const [layoutTarget, setLayoutTarget] = useState<EditLayoutTarget>('unlocked');
   const [marqueeMode, setMarqueeMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -236,6 +242,7 @@ export default function App() {
       zones: ZoneContainer[];
       widgets: CanvasWidget[];
       viewportOrigin?: { x: number; y: number } | null;
+      rawPublicLayout?: PublicLayoutConfig;
     }>
   >([]);
   const [lockedRedoStack, setLockedRedoStack] = useState<
@@ -245,6 +252,7 @@ export default function App() {
       zones: ZoneContainer[];
       widgets: CanvasWidget[];
       viewportOrigin?: { x: number; y: number } | null;
+      rawPublicLayout?: PublicLayoutConfig;
     }>
   >([]);
 
@@ -481,12 +489,12 @@ export default function App() {
 
   useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (pendingSaveRef.current || inFlightSaveRef.current || inFlightPromiseRef.current) {
-        if (saveTimerRef.current !== null) {
-          window.clearTimeout(saveTimerRef.current);
-          saveTimerRef.current = null;
-        }
-        void flushPendingSave();
+      if (
+        hasUnsavedRef.current ||
+        pendingSaveRef.current ||
+        inFlightSaveRef.current ||
+        inFlightPromiseRef.current
+      ) {
         e.preventDefault();
         e.returnValue = '';
       }
@@ -495,7 +503,7 @@ export default function App() {
     return () => {
       window.removeEventListener('beforeunload', onBeforeUnload);
     };
-  }, [flushPendingSave]);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -530,6 +538,9 @@ export default function App() {
           (options?.stackTarget !== 'unlocked' && editingLockedRef.current);
         if (useLockedStack) {
           const prevLocked = projectPublicCanvas(prevDoc).doc;
+          const rawPublicLayout = prevDoc.publicLayout
+            ? structuredClone(prevDoc.publicLayout)
+            : undefined;
           setLockedUndoStack((s) => [
             ...s.slice(-29),
             {
@@ -538,6 +549,7 @@ export default function App() {
               zones: prevLocked.zones ?? [],
               widgets: prevLocked.widgets ?? [],
               viewportOrigin: prevDoc.publicLayout?.viewportOrigin,
+              rawPublicLayout,
             },
           ]);
           setLockedRedoStack([]);
@@ -598,17 +610,21 @@ export default function App() {
         window.clearTimeout(savedBadgeTimerRef.current);
         savedBadgeTimerRef.current = null;
       }
-      setSaveStatus('saving');
 
+      if (editModeRef.current) {
+        hasUnsavedRef.current = true;
+        setHasUnsavedChanges(true);
+        return;
+      }
+
+      setSaveStatus('saving');
       const nextRev = ++commitRevRef.current;
       pendingSaveRef.current = { rev: nextRev, doc: nextDoc };
       if (saveTimerRef.current !== null) {
         window.clearTimeout(saveTimerRef.current);
-      }
-      saveTimerRef.current = window.setTimeout(() => {
         saveTimerRef.current = null;
-        void flushPendingSave();
-      }, 80);
+      }
+      void flushPendingSave();
     },
     [flushPendingSave]
   );
@@ -707,6 +723,7 @@ export default function App() {
       zones: ZoneContainer[];
       widgets: CanvasWidget[];
       viewportOrigin?: { x: number; y: number } | null;
+      rawPublicLayout?: PublicLayoutConfig;
     }) => {
       const curDoc = docRef.current;
       const merged = mergeLockedLayoutEdit(curDoc, {
@@ -715,20 +732,13 @@ export default function App() {
         items: snap.items,
         zones: snap.zones,
         widgets: snap.widgets,
-        publicLayout: {
-          positions: {},
-          viewportOrigin: snap.viewportOrigin ?? null,
-        },
+        publicLayout: snap.rawPublicLayout
+          ? structuredClone(snap.rawPublicLayout)
+          : { positions: {}, viewportOrigin: snap.viewportOrigin ?? null },
       });
-      const restoredPl: PublicLayoutConfig = {
-        ...(merged.publicLayout ?? { positions: {} }),
-        ...(snap.viewportOrigin !== undefined
-          ? { viewportOrigin: snap.viewportOrigin }
-          : { viewportOrigin: undefined }),
-      };
-      if (snap.viewportOrigin === undefined) {
-        delete restoredPl.viewportOrigin;
-      }
+      const restoredPl = snap.rawPublicLayout
+        ? structuredClone(snap.rawPublicLayout)
+        : undefined;
       void commitDocState(merged.folders, merged.items, false, merged.zones, merged.widgets, {
         nextPublicLayout: restoredPl,
         replaceCanonical: true,
@@ -744,6 +754,9 @@ export default function App() {
       setLockedUndoStack((s) => s.slice(0, -1));
       const curDoc = docRef.current;
       const curLocked = projectPublicCanvas(curDoc).doc;
+      const rawPublicLayout = curDoc.publicLayout
+        ? structuredClone(curDoc.publicLayout)
+        : undefined;
       setLockedRedoStack((r) => [
         ...r,
         {
@@ -752,6 +765,7 @@ export default function App() {
           zones: curLocked.zones ?? [],
           widgets: curLocked.widgets ?? [],
           viewportOrigin: curDoc.publicLayout?.viewportOrigin,
+          rawPublicLayout,
         },
       ]);
       applyLockedSnapshot(prev);
@@ -792,6 +806,9 @@ export default function App() {
       setLockedRedoStack((r) => r.slice(0, -1));
       const curDoc = docRef.current;
       const curLocked = projectPublicCanvas(curDoc).doc;
+      const rawPublicLayout = curDoc.publicLayout
+        ? structuredClone(curDoc.publicLayout)
+        : undefined;
       setLockedUndoStack((s) => [
         ...s.slice(-29),
         {
@@ -800,6 +817,7 @@ export default function App() {
           zones: curLocked.zones ?? [],
           widgets: curLocked.widgets ?? [],
           viewportOrigin: curDoc.publicLayout?.viewportOrigin,
+          rawPublicLayout,
         },
       ]);
       applyLockedSnapshot(next);
@@ -832,6 +850,66 @@ export default function App() {
     applyLockedSnapshot,
     commitDocState,
   ]);
+
+  const handleManualSave = useCallback(async (): Promise<boolean> => {
+    const activeEl = document.activeElement as HTMLElement | null;
+    if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) {
+      activeEl.blur();
+      await new Promise<void>((r) => window.setTimeout(r, 0));
+    }
+    if (!hasUnsavedRef.current) {
+      showToast('布局已是最新状态');
+      return true;
+    }
+    if (inFlightSaveRef.current && inFlightPromiseRef.current) {
+      await inFlightPromiseRef.current;
+    }
+    setFinishingEdit(true);
+    setSaveStatus('saving');
+    try {
+      const saved = await saveCanvasCompactApi(docRef.current);
+      if (
+        saved.grid.cellSize !== docRef.current.grid.cellSize ||
+        saved.grid.gap !== docRef.current.grid.gap
+      ) {
+        const next = { ...docRef.current, updatedAt: saved.updatedAt, grid: saved.grid };
+        docRef.current = next;
+        setDoc(next);
+      } else {
+        docRef.current = { ...docRef.current, updatedAt: saved.updatedAt };
+      }
+      editBaselineDocRef.current = structuredClone(docRef.current);
+      hasUnsavedRef.current = false;
+      setHasUnsavedChanges(false);
+      sessionDirtyRef.current = false;
+      setSaveStatus('saved');
+      if (savedBadgeTimerRef.current !== null) {
+        window.clearTimeout(savedBadgeTimerRef.current);
+      }
+      savedBadgeTimerRef.current = window.setTimeout(() => {
+        savedBadgeTimerRef.current = null;
+        setSaveStatus((cur) => (cur === 'saved' ? 'idle' : cur));
+      }, 2400);
+      showToast('✓ 布局已保存', 'success');
+      return true;
+    } catch (err) {
+      setSaveStatus('error');
+      showToast(err instanceof Error ? err.message : '保存失败，请检查网络后重试', 'error');
+      return false;
+    } finally {
+      setFinishingEdit(false);
+    }
+  }, [showToast]);
+
+  const enterEditModeWithDoc = useCallback((baseDoc: CanvasDocument) => {
+    editBaselineDocRef.current = structuredClone(baseDoc);
+    hasUnsavedRef.current = false;
+    setHasUnsavedChanges(false);
+    sessionDirtyRef.current = false;
+    setLayoutTarget('unlocked');
+    editModeRef.current = true;
+    setEditMode(true);
+  }, []);
 
   const topLevelEntities = useMemo(() => getTopLevelEntities(displayedDoc), [displayedDoc]);
 
@@ -947,6 +1025,12 @@ export default function App() {
       if (!inInput && e.key === '/') {
         e.preventDefault();
         setSearchOpen(true);
+        return;
+      }
+
+      if (editMode && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        void handleManualSave();
         return;
       }
 
@@ -1118,6 +1202,7 @@ export default function App() {
     displayedDoc.zones,
     displayedDoc.widgets,
     topLevelEntities,
+    handleManualSave,
     handleUndo,
     handleRedo,
     handleDeleteEntities,
@@ -1138,7 +1223,14 @@ export default function App() {
           await new Promise<void>((r) => window.setTimeout(r, 0));
         }
 
-        if (
+        if (editModeRef.current && hasUnsavedRef.current) {
+          const proceed = window.confirm(
+            '当前有未保存的布局修改，是否保存后再上锁？（点击取消将留在当前编辑页）'
+          );
+          if (!proceed) return;
+          const savedOk = await handleManualSave();
+          if (!savedOk) return;
+        } else if (
           saveTimerRef.current !== null ||
           pendingSaveRef.current ||
           inFlightSaveRef.current ||
@@ -1151,11 +1243,15 @@ export default function App() {
           }
         }
         sessionDirtyRef.current = false;
+        hasUnsavedRef.current = false;
+        setHasUnsavedChanges(false);
+        editBaselineDocRef.current = null;
         setInlineEditingId(null);
 
         await lockAuth();
         setUnlocked(false);
         setSettingsOpen(false);
+        editModeRef.current = false;
         setEditMode(false);
         setLayoutTarget('unlocked');
         setUnlockedUndoStack([]);
@@ -1366,6 +1462,34 @@ export default function App() {
     showToast('已继承解锁后公开元素排版（可按撤销恢复）');
   }, [commitDocState, showToast]);
 
+  const handleDiscardEdit = useCallback(() => {
+    const wasLockedTarget = layoutTarget === 'locked';
+    if (hasUnsavedRef.current && editBaselineDocRef.current) {
+      const baseline = structuredClone(editBaselineDocRef.current);
+      docRef.current = baseline;
+      setDoc(baseline);
+      setUnlockedUndoStack([]);
+      setUnlockedRedoStack([]);
+      setLockedUndoStack([]);
+      setLockedRedoStack([]);
+      hasUnsavedRef.current = false;
+      setHasUnsavedChanges(false);
+      setSaveStatus('idle');
+      showToast('已放弃未保存的修改');
+    }
+    sessionDirtyRef.current = false;
+    editBaselineDocRef.current = null;
+    editModeRef.current = false;
+    setEditMode(false);
+    setLayoutTarget('unlocked');
+    setMarqueeMode(false);
+    setInlineEditingId(null);
+    setSelectedIds([]);
+    if (wasLockedTarget && !isDocVisibleInCurrentView(docRef.current, viewStateRef.current)) {
+      flyToViewState(computeInitialView(docRef.current, settings));
+    }
+  }, [layoutTarget, settings, flyToViewState, isDocVisibleInCurrentView, showToast]);
+
   async function handleToggleEditMode() {
     if (editMode) {
       if (finishingEdit) return;
@@ -1375,7 +1499,10 @@ export default function App() {
         await new Promise<void>((r) => window.setTimeout(r, 0));
       }
 
-      if (
+      if (hasUnsavedRef.current) {
+        const savedOk = await handleManualSave();
+        if (!savedOk) return;
+      } else if (
         saveTimerRef.current !== null ||
         pendingSaveRef.current ||
         inFlightSaveRef.current ||
@@ -1391,17 +1518,18 @@ export default function App() {
       }
 
       const wasLockedTarget = layoutTarget === 'locked';
+      editModeRef.current = false;
       setEditMode(false);
       setLayoutTarget('unlocked');
       setMarqueeMode(false);
       setInlineEditingId(null);
       setSelectedIds([]);
+      editBaselineDocRef.current = null;
+      hasUnsavedRef.current = false;
+      setHasUnsavedChanges(false);
+      sessionDirtyRef.current = false;
       if (wasLockedTarget && !isDocVisibleInCurrentView(docRef.current, viewStateRef.current)) {
         flyToViewState(computeInitialView(docRef.current, settings));
-      }
-      if (sessionDirtyRef.current) {
-        sessionDirtyRef.current = false;
-        showToast('✓ 布局已保存', 'success');
       }
       return;
     }
@@ -1413,9 +1541,7 @@ export default function App() {
       });
       return;
     }
-    sessionDirtyRef.current = false;
-    setLayoutTarget('unlocked');
-    setEditMode(true);
+    enterEditModeWithDoc(docRef.current);
   }
 
   function handleSaveEditor(payload: ItemEditorSavePayload): string | null {
@@ -1993,7 +2119,7 @@ export default function App() {
   }
 
   function handleCreateZoneQuick(worldX?: number, worldY?: number) {
-    if (!editMode) setEditMode(true);
+    if (!editMode) enterEditModeWithDoc(docRef.current);
     const now = new Date().toISOString();
     const anchor = worldPosToGrid(worldX, worldY, 4, 2);
     const id = `zone-${crypto.randomUUID().slice(0, 8)}`;
@@ -2020,7 +2146,7 @@ export default function App() {
   }
 
   function handleCreateZoneFromSelection() {
-    if (!editMode) setEditMode(true);
+    if (!editMode) enterEditModeWithDoc(docRef.current);
     const selSet = new Set(selectedIds);
     const textList = (displayedDoc.widgets ?? []).filter(
       (w): w is FreeTextWidget => w.kind === 'text'
@@ -2062,7 +2188,7 @@ export default function App() {
   }
 
   function handleCreateNoteQuick(worldX?: number, worldY?: number) {
-    if (!editMode) setEditMode(true);
+    if (!editMode) enterEditModeWithDoc(docRef.current);
     const now = new Date().toISOString();
     const anchor = worldPosToGrid(worldX, worldY, 2, 2);
     const slot = placeNearAnchor(2, 2, anchor);
@@ -2093,7 +2219,7 @@ export default function App() {
   }
 
   function handleCreateTextQuick(worldX?: number, worldY?: number) {
-    if (!editMode) setEditMode(true);
+    if (!editMode) enterEditModeWithDoc(docRef.current);
     const now = new Date().toISOString();
     const anchor = worldPosToGrid(worldX, worldY, 3, 1);
     const id = `text-${crypto.randomUUID().slice(0, 8)}`;
@@ -2803,6 +2929,9 @@ export default function App() {
                 onLockToggle={handleLockToggle}
                 editMode={editMode}
                 onToggleEditMode={() => void handleToggleEditMode()}
+                hasUnsavedChanges={hasUnsavedChanges}
+                onManualSave={() => void handleManualSave()}
+                onDiscardEdit={handleDiscardEdit}
                 layoutTarget={layoutTarget}
                 onSwitchToUnlockedLayout={() => handleSwitchLayoutTarget('unlocked')}
                 saveStatus={saveStatus}
@@ -3129,8 +3258,7 @@ export default function App() {
                   setLayoutTarget('unlocked');
                   const latestDoc = await refreshCanvas(true);
                   if (nextAction === 'edit') {
-                    sessionDirtyRef.current = false;
-                    setEditMode(true);
+                    enterEditModeWithDoc(latestDoc ?? docRef.current);
                   }
                   if (widgetPending) {
                     const refreshed = (latestDoc?.widgets ?? []).find(

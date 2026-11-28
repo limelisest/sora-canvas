@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   AlignCenter,
   AlignLeft,
@@ -22,6 +22,7 @@ import {
   Type,
   Undo2,
   Unlock,
+  X,
 } from 'lucide-react';
 import type {
   BookmarkItem,
@@ -154,12 +155,30 @@ export function EditDock({
   onRedo,
 }: EditDockProps) {
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
+  const [confirmSync, setConfirmSync] = useState(false);
+  const syncTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (selectedItemCount === 0) {
       setFolderPickerOpen(false);
     }
   }, [selectedItemCount]);
+
+  useEffect(() => {
+    setConfirmSync(false);
+    if (syncTimerRef.current !== null) {
+      window.clearTimeout(syncTimerRef.current);
+      syncTimerRef.current = null;
+    }
+  }, [layoutTarget]);
+
+  useEffect(() => {
+    return () => {
+      if (syncTimerRef.current !== null) {
+        window.clearTimeout(syncTimerRef.current);
+      }
+    };
+  }, []);
 
   const divider = <span className="h-4 w-px bg-[var(--border-hair)] mx-0.5 shrink-0" />;
   const chipBtn =
@@ -673,15 +692,60 @@ export function EditDock({
         {layoutTarget === 'locked' && (
           <>
             {divider}
-            <button
-              type="button"
-              onClick={onSyncUnlockedToLocked}
-              className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 font-medium bg-[var(--bg-subtle)] hover:bg-[var(--accent-orange)] hover:text-white border border-[var(--border-hair)] text-[var(--ink-main)] transition-colors cursor-pointer"
-              title="将解锁后布局中公开元素的位置与尺寸复制到当前解锁前布局，可随时撤销"
-            >
-              <Copy size={11} />
-              <span>继承解锁后排版</span>
-            </button>
+            {confirmSync ? (
+              <div className="inline-flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (syncTimerRef.current !== null) {
+                      window.clearTimeout(syncTimerRef.current);
+                      syncTimerRef.current = null;
+                    }
+                    setConfirmSync(false);
+                    onSyncUnlockedToLocked();
+                  }}
+                  className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 font-medium bg-[var(--accent-red)] text-white hover:opacity-90 transition-opacity cursor-pointer"
+                  title="再次点击确认覆盖当前解锁前布局，可随时撤销"
+                >
+                  <Copy size={11} />
+                  <span>确认覆盖解锁前排版？</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (syncTimerRef.current !== null) {
+                      window.clearTimeout(syncTimerRef.current);
+                      syncTimerRef.current = null;
+                    }
+                    setConfirmSync(false);
+                  }}
+                  className="h-6 w-6 rounded-full flex items-center justify-center text-[var(--ink-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--ink-main)] cursor-pointer"
+                  aria-label="取消继承排版"
+                  title="取消"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmSync(true);
+                  if (syncTimerRef.current !== null) {
+                    window.clearTimeout(syncTimerRef.current);
+                  }
+                  syncTimerRef.current = window.setTimeout(() => {
+                    syncTimerRef.current = null;
+                    setConfirmSync(false);
+                  }, 3500);
+                }}
+                className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 font-medium bg-[var(--bg-subtle)] hover:bg-[var(--accent-orange)] hover:text-white border border-[var(--border-hair)] text-[var(--ink-main)] transition-colors cursor-pointer"
+                title="将解锁后布局中公开元素的位置与尺寸复制到当前解锁前布局，可随时撤销"
+              >
+                <Copy size={11} />
+                <span>继承解锁后排版</span>
+              </button>
+            )}
           </>
         )}
 
