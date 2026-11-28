@@ -22,6 +22,7 @@ import {
   mergeLockedLayoutEdit,
   projectPublicCanvas,
   reconcilePublicLayout,
+  toCanvasDocument,
 } from '../shared/dualLayout';
 import {
   applyEntityLayoutToDoc,
@@ -119,15 +120,7 @@ const INITIAL_BOOT = typeof document !== 'undefined' ? readBootPayload() : null;
 export default function App() {
   const [doc, setDoc] = useState<CanvasDocument>(() =>
     INITIAL_BOOT
-      ? {
-          version: 2,
-          updatedAt: INITIAL_BOOT.updatedAt,
-          grid: INITIAL_BOOT.grid,
-          folders: INITIAL_BOOT.folders,
-          items: INITIAL_BOOT.items,
-          zones: INITIAL_BOOT.zones ?? [],
-          widgets: INITIAL_BOOT.widgets ?? [],
-        }
+      ? toCanvasDocument(INITIAL_BOOT)
       : {
           version: 2,
           updatedAt: '',
@@ -182,15 +175,7 @@ export default function App() {
   const [view, setView] = useState(() =>
     INITIAL_BOOT
       ? computeInitialView(
-          {
-            version: 2,
-            updatedAt: INITIAL_BOOT.updatedAt,
-            grid: INITIAL_BOOT.grid,
-            folders: INITIAL_BOOT.folders,
-            items: INITIAL_BOOT.items,
-            zones: INITIAL_BOOT.zones ?? [],
-            widgets: INITIAL_BOOT.widgets ?? [],
-          },
+          toCanvasDocument(INITIAL_BOOT),
           INITIAL_BOOT.settings ?? DEFAULT_SITE_SETTINGS
         )
       : { scale: 1, panX: 400, panY: 300 }
@@ -351,15 +336,7 @@ export default function App() {
       startLoadCycle();
       try {
         const res = await fetchCanvas();
-        const nextDoc: CanvasDocument = {
-          version: 2,
-          updatedAt: res.updatedAt,
-          grid: res.grid,
-          folders: res.folders,
-          items: res.items,
-          zones: res.zones ?? [],
-          widgets: res.widgets ?? [],
-        };
+        const nextDoc = toCanvasDocument(res);
         docRef.current = nextDoc;
         setDoc(nextDoc);
         setUnlocked(res.unlocked);
@@ -2880,8 +2857,9 @@ export default function App() {
             onLock={() => void handleLockToggle()}
             onUpdateSettings={handleUpdateSettings}
             onCanvasReplaced={(nextDoc, nextSettings) => {
-              docRef.current = nextDoc;
-              setDoc(nextDoc);
+              const cleanDoc = toCanvasDocument(nextDoc);
+              docRef.current = cleanDoc;
+              setDoc(cleanDoc);
               if (nextSettings) setSettings(nextSettings);
             }}
             onToast={showToast}

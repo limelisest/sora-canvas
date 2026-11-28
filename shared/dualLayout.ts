@@ -1,6 +1,7 @@
 import type {
   BookmarkItem,
   CanvasDocument,
+  CanvasResponse,
   CanvasWidget,
   FolderContainer,
   FolderDisplayMode,
@@ -375,20 +376,34 @@ export function projectPublicCanvas(doc: CanvasDocument): ProjectedPublicCanvas 
  * Prune stale/private keys from `publicLayout.positions` and persist
  * non-overlapping fallback slots for newly exposed public entities if needed.
  */
+export function toCanvasDocument(src: CanvasDocument | CanvasResponse): CanvasDocument {
+  const normalizedPl = normalizePublicLayout(src.publicLayout);
+  return {
+    version: 2,
+    updatedAt: src.updatedAt,
+    grid: src.grid,
+    folders: src.folders,
+    items: src.items,
+    zones: src.zones ?? [],
+    widgets: src.widgets ?? [],
+    ...(normalizedPl ? { publicLayout: normalizedPl } : {}),
+  };
+}
+
 export function reconcilePublicLayout(doc: CanvasDocument): CanvasDocument {
   const parts = filterPublicDocParts(doc);
   const rawPositions = doc.publicLayout?.positions ?? {};
   const nextPositions: Record<string, LayoutOverride> = {};
 
   if (doc.publicLayout?.zones === undefined) {
-    for (const z of parts.zones) {
+    for (const z of doc.zones ?? []) {
       const ov = rawPositions[z.id];
       if (ov && isValidZoneOverride(ov)) {
         nextPositions[z.id] = { x: ov.x, y: ov.y, w: ov.w, h: ov.h };
       }
     }
   }
-  for (const f of parts.folders) {
+  for (const f of doc.folders) {
     const ov = rawPositions[f.id];
     if (ov && isValidGridOverride(ov)) {
       nextPositions[f.id] = {
@@ -402,14 +417,14 @@ export function reconcilePublicLayout(doc: CanvasDocument): CanvasDocument {
       };
     }
   }
-  for (const it of parts.items) {
+  for (const it of doc.items) {
     if (it.parentId !== null) continue;
     const ov = rawPositions[it.id];
     if (ov && isValidGridOverride(ov)) {
       nextPositions[it.id] = { x: ov.x, y: ov.y, w: ov.w, h: ov.h };
     }
   }
-  for (const w of parts.widgets) {
+  for (const w of doc.widgets ?? []) {
     const ov = rawPositions[w.id];
     if (!ov) continue;
     if (w.kind === 'text') {

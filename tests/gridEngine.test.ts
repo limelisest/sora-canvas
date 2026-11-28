@@ -21,6 +21,7 @@ import {
   normalizePublicLayout,
   projectPublicCanvas,
   reconcilePublicLayout,
+  toCanvasDocument,
 } from '../shared/dualLayout.js';
 
 function makeEntity(id: string, x: number, y: number, w = 1, h = 1): GridEntity {
@@ -476,7 +477,8 @@ test('dualLayout: projectPublicCanvas, reconcilePublicLayout, and mergeLockedLay
       positions: {
         'f-pub': { x: 5, y: 5, w: 3, h: 2 }, // intentionally covers (5,5) to test collision fallback of i-new-unrecorded
         'i-pub': { x: 0, y: 0, w: 2, h: 1 },
-        'f-priv': { x: 99, y: 99, w: 2, h: 2 }, // stale/private key should be ignored & pruned
+        'f-priv': { x: 99, y: 99, w: 2, h: 2 }, // surviving private folder override retained safely, never projected
+        'f-deleted': { x: 20, y: 20, w: 2, h: 2 }, // deleted/non-existent id should be pruned
       },
       viewportOrigin: { x: 120, y: -40 },
     },
@@ -498,9 +500,10 @@ test('dualLayout: projectPublicCanvas, reconcilePublicLayout, and mergeLockedLay
   const relocatedNew = projected.doc.items.find((i) => i.id === 'i-new-unrecorded')!;
   assert.ok(relocatedNew.x !== 5 || relocatedNew.y !== 5);
 
-  // 2. reconcilePublicLayout prunes private key and stores relocated slot cleanly
+  // 2. reconcilePublicLayout prunes deleted keys, retains surviving entity overrides, and stores relocated slot cleanly
   const reconciled = reconcilePublicLayout(canonical);
-  assert.equal(reconciled.publicLayout?.positions['f-priv'], undefined);
+  assert.equal(reconciled.publicLayout?.positions['f-deleted'], undefined);
+  assert.deepEqual(reconciled.publicLayout?.positions['f-priv'], { x: 99, y: 99, w: 2, h: 2 });
   assert.ok(reconciled.publicLayout?.positions['i-new-unrecorded']);
 
   // 3. mergeLockedLayoutEdit syncs rename/addition/deletion while keeping canonical coords & private items untouched
@@ -690,4 +693,47 @@ test('dualLayout: independent folder displayMode and independent publicLayout.zo
     (syncedPl.zones ?? []).map((z) => ({ id: z.id, title: z.title })),
     [{ id: 'z-unlocked-pub', title: '解锁后改名分区' }]
   );
+
+  // 6. Temporarily toggling a folder to private or passing a private zone over it preserves its publicLayout.positions entry
+  const folderPubSaved = mergeLockedLayoutEdit(canonical, {
+    ...projectPublicCanvas(canonical).doc,
+    folders: projectPublicCanvas(canonical).doc.folders.map((f) =>
+      f.id === 'f-mode' ? { ...f, x: 7, y: 6, w: 3, h: 2, displayMode: 'grid' } : f
+    ),
+  });
+  const toggledPrivate = reconcilePublicLayout({
+    ...folderPubSaved,
+    folders: folderPubSaved.folders.map((f) =>
+      f.id === 'f-mode' ? { ...f, isPrivate: true } : f
+    ),
+  });
+  assert.deepEqual(toggledPrivate.publicLayout?.positions['f-mode'], {
+    x: 7,
+    y: 6,
+    w: 3,
+    h: 2,
+    displayMode: 'grid',
+  });
+  assert.equal(projectPublicCanvas(toggledPrivate).doc.folders.some((f) => f.id === 'f-mode'), false);
+
+  const toggledBackPublic = reconcilePublicLayout({
+    ...toggledPrivate,
+    folders: toggledPrivate.folders.map((f) =>
+      f.id === 'f-mode' ? { ...f, isPrivate: false } : f
+    ),
+  });
+  const restoredProj = projectPublicCanvas(toggledBackPublic).doc.folders.find((f) => f.id === 'f-mode')!;
+  assert.deepEqual(
+    { x: restoredProj.x, y: restoredProj.y, w: restoredProj.w, h: restoredProj.h, displayMode: restoredProj.displayMode },
+    { x: 7, y: 6, w: 3, h: 2, displayMode: 'grid' }
+  );
+
+  // 7. toCanvasDocument retains publicLayout verbatim and strips response-only fields
+  const extracted = toCanvasDocument({
+    ...toggledBackPublic,
+    unlocked: true,
+    hasPrivateHidden: false,
+    settings: {} as never,
+  });
+  assert.deepEqual(extracted.publicLayout, toggledBackPublic.publicLayout);
 });

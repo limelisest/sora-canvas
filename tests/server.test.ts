@@ -7,6 +7,7 @@ import type { FastifyInstance } from 'fastify';
 import sharp from 'sharp';
 import { buildApp } from '../server/app.js';
 import { normalizeDocument, pruneOrphanedUploads } from '../server/store.js';
+import { toCanvasDocument } from '../shared/dualLayout.js';
 import { DEFAULT_SITE_SETTINGS, normalizeSiteSettings } from '../shared/settings.js';
 
 let tmpDir: string;
@@ -1802,5 +1803,111 @@ test('dual layout persistence & backup preserve independent folder displayMode a
     await appB.close();
     await fs.rm(dirA, { recursive: true, force: true });
     await fs.rm(dirB, { recursive: true, force: true });
+  }
+});
+
+test('authenticated boot HTML and GET /api/canvas include complete publicLayout preserved by toCanvasDocument', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'neko-boot-dual-'));
+  const bootApp = await buildApp({ dataDir: dir, password: 'pw', serveStatic: true });
+  const now = new Date().toISOString();
+
+  try {
+    const unlockRes = await bootApp.inject({
+      method: 'POST',
+      url: '/api/auth/unlock',
+      payload: { password: 'pw' },
+    });
+    assert.equal(unlockRes.statusCode, 200);
+    const cookie = unlockRes.headers['set-cookie'] as string;
+
+    const putRes = await bootApp.inject({
+      method: 'PUT',
+      url: '/api/canvas',
+      headers: { cookie },
+      payload: {
+        folders: [
+          {
+            id: 'f-boot-dual',
+            title: 'Boot Dual Folder',
+            x: 0,
+            y: 0,
+            w: 2,
+            h: 2,
+            displayMode: 'list',
+            isPrivate: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+        items: [],
+        zones: [],
+        widgets: [],
+        publicLayout: {
+          positions: {
+            'f-boot-dual': { x: 6, y: 4, w: 3, h: 2, displayMode: 'grid' },
+          },
+          zones: [
+            {
+              id: 'z-boot-locked',
+              title: 'Locked Boot Zone',
+              x: 6,
+              y: 4,
+              w: 4,
+              h: 3,
+              isPrivate: false,
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
+          viewportOrigin: { x: 240, y: 180 },
+        },
+      },
+    });
+    assert.equal(putRes.statusCode, 200);
+
+    // 1. Authenticated GET /api/canvas includes full publicLayout and toCanvasDocument preserves it
+    const authedApiRes = await bootApp.inject({
+      method: 'GET',
+      url: '/api/canvas',
+      headers: { cookie },
+    });
+    assert.equal(authedApiRes.statusCode, 200);
+    const parsedFromApi = toCanvasDocument(authedApiRes.json());
+    assert.deepEqual(parsedFromApi.publicLayout?.positions['f-boot-dual'], {
+      x: 6,
+      y: 4,
+      w: 3,
+      h: 2,
+      displayMode: 'grid',
+    });
+    assert.equal(parsedFromApi.publicLayout?.zones?.[0]?.id, 'z-boot-locked');
+    assert.deepEqual(parsedFromApi.publicLayout?.viewportOrigin, { x: 240, y: 180 });
+
+    // 2. Authenticated boot HTML embeds full publicLayout inside #neko-boot JSON
+    const bootHtmlRes = await bootApp.inject({
+      method: 'GET',
+      url: '/',
+      headers: { cookie },
+    });
+    assert.equal(bootHtmlRes.statusCode, 200);
+    const match = bootHtmlRes.body.match(/<script id="neko-boot" type="application\/json">([\s\S]*?)<\/script>/);
+    assert.ok(match && match[1]);
+    const bootPayload = JSON.parse(match[1].replace(/\\u003c/g, '<'));
+    const parsedFromBoot = toCanvasDocument(bootPayload);
+    assert.deepEqual(parsedFromBoot.publicLayout, parsedFromApi.publicLayout);
+
+    // 3. Unauthenticated boot HTML strips raw publicLayout completely
+    const anonHtmlRes = await bootApp.inject({ method: 'GET', url: '/' });
+    assert.equal(anonHtmlRes.statusCode, 200);
+    const anonMatch = anonHtmlRes.body.match(/<script id="neko-boot" type="application\/json">([\s\S]*?)<\/script>/);
+    assert.ok(anonMatch && anonMatch[1]);
+    const anonPayload = JSON.parse(anonMatch[1].replace(/\\u003c/g, '<'));
+    assert.equal('publicLayout' in anonPayload, false);
+    assert.equal(anonPayload.folders[0].displayMode, 'grid');
+    assert.equal(anonPayload.folders[0].x, 6);
+    assert.equal(anonPayload.zones[0].id, 'z-boot-locked');
+  } finally {
+    await bootApp.close();
+    await fs.rm(dir, { recursive: true, force: true });
   }
 });
